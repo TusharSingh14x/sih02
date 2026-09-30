@@ -17,7 +17,9 @@ sqlalchemy==2.0.43
 psycopg[binary]==3.3.5
 
 # --- ML / simulation stack ---
-torch==2.8.0
+# 2.8.0 has no wheels on Python 3.13/3.14 (Railway default). 2.9+ does.
+# Local Python 3.10 still installs a compatible 2.9.x wheel.
+torch>=2.9.0,<2.15.0
 numpy==1.26.4
 pandas==2.3.2
 langgraph==1.0.10
