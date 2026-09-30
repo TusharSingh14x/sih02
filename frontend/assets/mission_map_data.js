@@ -27,14 +27,14 @@ const COMM_STATIONS = [
 // to the same telemetry/defense-layer vocabulary used in the Live Ops
 // Console so the "issues" panel reads consistently across the product.
 const TRAJECTORY = [
-  { lat: 23.2599, lng: 77.4126, alt_ft: 0,     label: 'WP-0 · Launch (Bhopal AFS, simulated)', narrative: 'Engine start, taxi, takeoff roll. All channels nominal.' },
-  { lat: 26.4499, lng: 80.3319, alt_ft: 12500, label: 'WP-1 · Climb-out', narrative: 'Climb to patrol altitude 12,500 ft, heading north-east. CHT/EGT tracking nominal cruise baseline.' },
-  { lat: 22.5726, lng: 88.3639, alt_ft: 14000, label: 'WP-2 · Ingress', narrative: 'Level cruise, patrol corridor entry toward the eastern coast. Vibration RMS nominal, fuel flow steady.' },
-  { lat: 20.2961, lng: 85.8245, alt_ft: 14000, label: 'WP-3 · Threat Encounter Zone', narrative: 'SIMULATED THREAT ENCOUNTER — EW/GPS-denial + light ground fire. Sensor integrity compromised; PRAHARI Layer 1 fusion + Layer 4 safe-mode gate engage.', isThreatZone: true },
-  { lat: 21.4500, lng: 87.0200, alt_ft: 13500, label: 'WP-4 · ITR Overflight', narrative: 'Recovery from threat encounter — telemetry integrity restored, ensemble agreement back above threshold.' },
-  { lat: 21.1458, lng: 79.0882, alt_ft: 11000, label: 'WP-5 · Egress', narrative: 'Descend, egress patrol corridor heading south-west. Component health matrix nominal.' },
-  { lat: 22.7196, lng: 75.8577, alt_ft: 4000,  label: 'WP-6 · Approach', narrative: 'Descent for recovery. Throttle/mixture stabilized by DRL prognostic strategist.' },
-  { lat: 23.2599, lng: 77.4126, alt_ft: 0,     label: 'WP-7 · Recovery (Bhopal AFS, simulated)', narrative: 'Landing, mission complete. Full event timeline logged to PRAHARI dashboard.' },
+  { lat: 23.2599, lng: 77.4126, alt_ft: 0,     label: 'WP-0 · Launch (Bhopal AFS, simulated)', narrative: 'Illustrative departure point. Select Play to follow the planned route.' },
+  { lat: 26.4499, lng: 80.3319, alt_ft: 12500, label: 'WP-1 · Climb-out', narrative: 'Planned climb to 12,500 ft along the north-eastern route leg.' },
+  { lat: 22.5726, lng: 88.3639, alt_ft: 14000, label: 'WP-2 · Ingress', narrative: 'Planned level cruise at 14,000 ft toward the eastern corridor.' },
+  { lat: 20.2961, lng: 85.8245, alt_ft: 14000, label: 'WP-3 · Scenario waypoint', narrative: 'Fictional scenario waypoint. Fault scenarios are controlled separately in the live engine panel; passing this point does not inject a fault.', isThreatZone: true },
+  { lat: 21.4500, lng: 87.0200, alt_ft: 13500, label: 'WP-4 · Coastal turn', narrative: 'Turn toward the return corridor at a planned altitude of 13,500 ft.' },
+  { lat: 21.1458, lng: 79.0882, alt_ft: 11000, label: 'WP-5 · Egress', narrative: 'Planned descent toward the western return corridor.' },
+  { lat: 22.7196, lng: 75.8577, alt_ft: 4000,  label: 'WP-6 · Approach', narrative: 'Planned descent to 4,000 ft for the recovery approach.' },
+  { lat: 23.2599, lng: 77.4126, alt_ft: 0,     label: 'WP-7 · Recovery (Bhopal AFS, simulated)', narrative: 'Planned recovery at the launch location. Route replay stops here until restarted.' },
 ];
 
 // Multiple simulated threat TYPES against the aircraft's own systems (sensor
@@ -46,33 +46,33 @@ const TRAJECTORY = [
 const ATTACK_TYPES = [
   {
     id: 'ew-denial',
-    label: 'EW / GPS Denial',
+    label: 'Sensor signal loss',
     faultType: 'sensor_dropout',
-    description: 'Simulated electronic-warfare/GPS-denial encounter — CHT and oil-pressure sensor readings drop out (NaN/out-of-range). Tests Layer 1 fusion (leans on the physics estimate) and the Layer 4 safe-mode gate.',
+    description: 'Drop selected engine sensor readings to test missing-data handling and the safe-mode gate. This scenario does not simulate GPS.',
   },
   {
     id: 'thermal-damage',
-    label: 'Ground Fire — Thermal Damage',
+    label: 'Thermal stress',
     faultType: 'thermal_shock',
-    description: 'Simulated thermal damage from ground fire — CHT/EGT ramp toward critical. Tests the DRL prognostic strategist\'s thermal de-rate shield.',
+    description: 'Raise engine temperatures to exercise the thermal-stress assessment and controller response.',
   },
   {
     id: 'lube-damage',
-    label: 'Ground Fire — Lubrication Damage',
+    label: 'Oil pressure loss',
     faultType: 'oil_leak',
-    description: 'Simulated ballistic damage to the lubrication circuit — oil pressure decays, oil temp climbs. Tests the oil-starvation mitigation path.',
+    description: 'Reduce oil pressure and increase oil temperature to test lubrication-fault detection.',
   },
   {
     id: 'structural-stress',
-    label: 'Structural Stress Encounter',
+    label: 'Vibration spike',
     faultType: 'vibration_spike',
-    description: 'Simulated severe turbulence/structural stress — vibration RMS spikes. Tests the vibration-alleviation throttle shield.',
+    description: 'Increase engine vibration to test vibration-fault detection and controller response.',
   },
   {
     id: 'sensor-spoof',
-    label: 'Sensor Spoofing / Drift',
+    label: 'Sensor drift',
     faultType: 'sensor_drift',
-    description: 'Simulated slow sensor calibration drift/spoofing — a subtle in-range bias that a single-frame threshold would miss. Tests Layer 5\'s rolling trend/PHM risk score.',
+    description: 'Introduce a gradual sensor bias to test trend monitoring and assessment consistency.',
   },
 ];
 

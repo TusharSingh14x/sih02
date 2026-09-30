@@ -14,7 +14,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Literal
 
 import numpy as np
 import torch
@@ -51,7 +51,7 @@ app.add_middleware(
 
 # Pydantic request models
 class FaultInjectionRequest(BaseModel):
-    fault_type: Optional[str] = None
+    fault_type: Optional[Literal["thermal_shock", "sensor_dropout", "oil_leak", "vibration_spike", "sensor_drift", "egt_over_demo"]] = None
 
 class EnvironmentRequest(BaseModel):
     altitude: float
@@ -158,21 +158,11 @@ class SimulationController:
         self.air_density   = 0.812
         self.cooling_factor = 1.0
 
-        # ---- Pre-compute trajectories for the mechanical fault archetypes ----
-        print("[LiveEngineSim] Pre-computing fault trajectories (this takes ~2–5 s) …")
+        # Interactive tests use controlled scenario dynamics from nominal.
+        # Training run-to-failure trajectories begin with several concurrent
+        # faults and are unsuitable for isolating a selected UI scenario.
         self._trajs: Dict[Optional[str], tuple] = {}
-        for fault in list(_FAULT_ARCHETYPES.keys()):
-            if fault in self._NON_ARCHETYPE_FAULTS:
-                continue
-            data, truth = _presim(fault, self._TOTAL_CYCLES)
-            if data is not None:
-                self._trajs[fault] = (data, truth)
-        self._using_enginesim = bool(self._trajs)
-
-        if not self._using_enginesim:
-            print("[LiveEngineSim] WARNING: EngineSim unavailable — falling back to "
-                  "hand-scripted physics.  Live demo will NOT use the same physics as "
-                  "the training dataset.")
+        self._using_enginesim = False
 
         # Expose attributes the rest of server.py reads directly
         self._reset_state_attrs()
@@ -209,12 +199,7 @@ class SimulationController:
     def step(self) -> Dict[str, float]:
         self.cycle += 1
 
-        # ---- Steady hand-scripted path: nominal cruise + sensor-level faults --
-        if self.injected_fault in self._NON_ARCHETYPE_FAULTS or not self._using_enginesim:
-            return self._step_scripted()
-
-        # ---- EngineSim path: mechanical fault archetypes ---------------------
-        return self._step_enginesim()
+        return self._step_scripted()
 
     def _step_enginesim(self) -> Dict[str, float]:
         """Advance one cycle using the pre-computed EngineSim trajectory."""
@@ -320,7 +305,9 @@ class SimulationController:
             self.oil_temp      = self.oil_temp + (115.0 - self.oil_temp) * 0.04 + noise(0.1)
             self.vibration_rms = self.vibration_rms + (2.05 - self.vibration_rms) * 0.04 + noise(0.01)
         elif self.injected_fault == "vibration_spike":
-            self.vibration_rms = self.vibration_rms + (3.25 - self.vibration_rms) * 0.08 + noise(0.02)
+            self.vibration_rms = self.vibration_rms + (3.8 - self.vibration_rms) * 0.08 + noise(0.02)
+        elif self.injected_fault == "egt_over_demo":
+            self.egt = self.egt + (840.0 - self.egt) * 0.08 + noise(0.3)
         elif self.injected_fault == "sensor_drift":
             drift_frac = min(1.0, self.cycle / 400.0)
             self.cht         = self.cht + drift_frac * 0.1
@@ -467,7 +454,7 @@ orchestrator = DigitalTwinOrchestrator(
 
 
 class FaultInjectionRequest(BaseModel):
-    fault_type: Optional[str] = None  # "thermal_shock", "sensor_dropout", "oil_leak", "vibration_spike", or None
+    fault_type: Optional[Literal["thermal_shock", "sensor_dropout", "oil_leak", "vibration_spike", "sensor_drift", "egt_over_demo"]] = None  # "thermal_shock", "sensor_dropout", "oil_leak", "vibration_spike", or None
 
 
 @app.get("/api/status")
@@ -762,8 +749,10 @@ async def agent_advise(user: User = Depends(require_user), db: Session = Depends
 async def inject_fault(req: FaultInjectionRequest):
     """Trigger or clear a fault injection in the live telemetry stream."""
     sim.inject_fault(req.fault_type)
-    if req.fault_type is None:
-        orchestrator.reset_state()
+    orchestrator.reset_state()
+    global _last_dispatch_payload, _last_sim_step
+    _last_dispatch_payload = None
+    _last_sim_step = 0.0
     return {
         "success": True,
         "active_fault": sim.injected_fault,
@@ -788,14 +777,11 @@ async def update_environment(req: EnvironmentRequest):
 @app.post("/api/simulate/reset")
 async def reset_simulation():
     """Reset simulation to healthy cruise start."""
-    sim.cycle = 0
-    sim.health = 1.0
-    sim.cht = 150.0
-    sim.egt = 650.0
-    sim.oil_pressure = 320.0
-    sim.vibration_rms = 1.2
-    sim.injected_fault = None
+    sim.inject_fault(None)
     orchestrator.reset_state()
+    global _last_dispatch_payload, _last_sim_step
+    _last_dispatch_payload = None
+    _last_sim_step = 0.0
     return {"success": True, "message": "Simulation reset"}
 
 
@@ -853,6 +839,57 @@ def _close_mission(mission_id: Optional[str], frame_count: int, final_fault: str
         print(f"[Persist] Could not close mission row: {e}")
 
 
+_last_sim_step = 0.0
+
+
+def next_live_dispatch() -> Dict[str, Any]:
+    """Generate at most one shared simulation frame per 100 ms.
+
+    Called synchronously on the event loop; no await can interleave a second
+    step. Each connected view receives the same packet and scenario state.
+    """
+    global _last_sim_step, _last_dispatch_payload
+    now = time.monotonic()
+    if _last_dispatch_payload is not None and now - _last_sim_step < 0.1:
+        return _last_dispatch_payload
+    # 1. Step simulation
+    raw_frame = sim.step()
+
+    # 2. Process through LangGraph Agentic Loop (Auditor -> PINN -> Classifier -> DRL -> Dispatch)
+    dispatch = orchestrator.process_telemetry_frame(raw_frame, cycle=sim.cycle)
+    dispatch["active_injected_fault"] = sim.injected_fault
+    dispatch["simulation_source"] = "controlled_scenario"
+
+    # 3. SIMULATED AUTOPILOT UPLINK — apply DRL policy feedback to the
+    #    simulator if shield/action active. This is the closed-loop
+    #    de-rate dispatch a real system would send over a STANAG
+    #    4586-style control link to the airframe's autopilot; here it
+    #    writes directly to the in-process simulation state. No real
+    #    flight-control protocol is implemented — labelled honestly
+    #    (dispatch["autopilot_uplink"] below) rather than claimed.
+    drl_act = dispatch.get("drl_action", {})
+    dispatch["autopilot_uplink"] = {"simulated": True, "protocol_note": "STANAG 4586-style closed-loop de-rate dispatch (simulated, not a real flight-control link)"}
+    if drl_act.get("shield_applied", False):
+        sim.throttle = float(np.clip(sim.throttle + drl_act.get("delta_throttle", 0.0), 0.50, 0.90))
+        sim.mixture = float(np.clip(sim.mixture + drl_act.get("delta_mixture", 0.0) * 1.5, 12.0, 15.0))
+
+    # 4. Layer 3 — sign the outgoing packet (HMAC-SHA256) and self-verify
+    #    before it leaves the server, demonstrating tamper/replay rejection
+    #    on the transport boundary without needing a second trust domain.
+    body_json = json.dumps(dispatch, sort_keys=True)
+    send_ts = time.time()
+    signature = sign_packet(body_json)
+    dispatch["integrity"] = {
+        "signature": signature,
+        "timestamp": send_ts,
+        "verified": verify_packet(body_json, signature, send_ts),
+    }
+
+    _last_sim_step = time.monotonic()
+    _last_dispatch_payload = dispatch
+    return dispatch
+
+
 @app.websocket("/ws/telemetry")
 async def telemetry_websocket(websocket: WebSocket):
     """High-frequency (10 Hz) live telemetry and orchestrator dispatch stream.
@@ -877,39 +914,7 @@ async def telemetry_websocket(websocket: WebSocket):
 
     try:
         while True:
-            # 1. Step simulation
-            raw_frame = sim.step()
-
-            # 2. Process through LangGraph Agentic Loop (Auditor -> PINN -> Classifier -> DRL -> Dispatch)
-            dispatch = orchestrator.process_telemetry_frame(raw_frame, cycle=sim.cycle)
-            dispatch["active_injected_fault"] = sim.injected_fault
-            global _last_dispatch_payload
-            _last_dispatch_payload = dispatch
-
-            # 3. SIMULATED AUTOPILOT UPLINK — apply DRL policy feedback to the
-            #    simulator if shield/action active. This is the closed-loop
-            #    de-rate dispatch a real system would send over a STANAG
-            #    4586-style control link to the airframe's autopilot; here it
-            #    writes directly to the in-process simulation state. No real
-            #    flight-control protocol is implemented — labelled honestly
-            #    (dispatch["autopilot_uplink"] below) rather than claimed.
-            drl_act = dispatch.get("drl_action", {})
-            dispatch["autopilot_uplink"] = {"simulated": True, "protocol_note": "STANAG 4586-style closed-loop de-rate dispatch (simulated, not a real flight-control link)"}
-            if drl_act.get("shield_applied", False):
-                sim.throttle = float(np.clip(sim.throttle + drl_act.get("delta_throttle", 0.0), 0.50, 0.90))
-                sim.mixture = float(np.clip(sim.mixture + drl_act.get("delta_mixture", 0.0) * 1.5, 12.0, 15.0))
-
-            # 4. Layer 3 — sign the outgoing packet (HMAC-SHA256) and self-verify
-            #    before it leaves the server, demonstrating tamper/replay rejection
-            #    on the transport boundary without needing a second trust domain.
-            body_json = json.dumps(dispatch, sort_keys=True)
-            send_ts = time.time()
-            signature = sign_packet(body_json)
-            dispatch["integrity"] = {
-                "signature": signature,
-                "timestamp": send_ts,
-                "verified": verify_packet(body_json, signature, send_ts),
-            }
+            dispatch = next_live_dispatch()
 
             # 5. Persist a FaultEvent row whenever the fault archetype or its
             #    severity changes — a server-side mirror of telemetry_store.js's
@@ -917,8 +922,7 @@ async def telemetry_websocket(websocket: WebSocket):
             frame_count += 1
             fault = dispatch.get("fault_archetype", "nominal")
             confidence = dispatch.get("fault_confidence", 0.0)
-            severity = "CRITICAL" if (fault != "nominal" and confidence > 0.8) else \
-                       ("MODERATE" if fault != "nominal" else "NOMINAL")
+            severity = dispatch.get("fault_severity", "NOMINAL")
             final_fault = fault
             final_rul = dispatch.get("adjusted_rul", dispatch.get("rul_cycles"))
             if severity == "CRITICAL":

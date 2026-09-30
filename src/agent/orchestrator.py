@@ -58,6 +58,16 @@ NOMINAL_LIMITS = {
 }
 
 
+# Plausibility limits for this simulator, separate from operating alarms.
+# A valid hazardous measurement must not be imputed back to nominal.
+SENSOR_VALID_RANGES = {
+    "rpm": (0, 8500), "cht": (-50, 500), "egt": (-50, 1200),
+    "oil_temp": (-50, 450), "oil_pressure": (0, 700), "fuel_flow": (0, 160),
+    "vibration_rms": (0, 40), "map": (0, 250), "afr": (5, 30),
+    "torque": (-100, 400), "crank_pos": (0, 720), "coolant_temp": (-50, 350),
+}
+
+
 class AgentState(TypedDict):
     raw_telemetry: Dict[str, Any]
     window_buffer: List[Dict[str, float]]
@@ -95,15 +105,27 @@ class DigitalTwinOrchestrator:
         self.fault_classifier = fault_classifier  # kept for callers/UI checking single-model presence
         self.drl_policy = drl_policy
 
-        # Load normalization parameters if available
+        # Training scalers are essential: clipping physical readings against
+        # a 0..1 placeholder makes every model window nearly identical.
+        self.norm_min = self.norm_max = None
+        self.normalization_source = "unavailable"
         norm_min_p = ROOT / "data" / "processed" / "norm_min.npy"
         norm_max_p = ROOT / "data" / "processed" / "norm_max.npy"
+        candidates = []
         if norm_min_p.exists() and norm_max_p.exists():
-            self.norm_min = np.load(norm_min_p)
-            self.norm_max = np.load(norm_max_p)
-        else:
-            self.norm_min = np.zeros(12)
-            self.norm_max = np.ones(12)
+            candidates.append((np.load(norm_min_p), np.load(norm_max_p), "training_dataset"))
+        if pinn_model is not None and hasattr(pinn_model, "norm_min"):
+            candidates.append((pinn_model.norm_min.detach().cpu().numpy(),
+                               pinn_model.norm_max.detach().cpu().numpy(), "pinn_checkpoint"))
+        for low, high, source in candidates:
+            low, high = np.asarray(low, dtype=np.float32), np.asarray(high, dtype=np.float32)
+            if (low.shape == high.shape == (12,) and np.isfinite(low).all()
+                    and np.isfinite(high).all() and (high > low).all()
+                    and not (np.all(low == 0) and np.all(high == 1))):
+                self.norm_min, self.norm_max = low.copy(), high.copy()
+                self.normalization_source = source
+                break
+        self.normalization_ready = self.norm_min is not None
 
         # Health and RUL smoothing memory (prevents high-frequency jitter)
         self._smoothed_health = {
@@ -154,8 +176,8 @@ class DigitalTwinOrchestrator:
                 is_corrupt = True
             else:
                 # Boundary plausibility check
-                lo, hi = NOMINAL_LIMITS[sensor]
-                if val < lo * 0.5 or val > hi * 1.5:
+                lo, hi = SENSOR_VALID_RANGES[sensor]
+                if val < lo or val > hi:
                     is_corrupt = True
 
             if is_corrupt:
@@ -221,7 +243,7 @@ class DigitalTwinOrchestrator:
         model_active      = False
 
         # ---- REAL MODEL PATH ------------------------------------------------
-        if len(buffer) >= 5 and self.pinn_model is not None:
+        if len(buffer) >= 5 and self.pinn_model is not None and self.normalization_ready:
             window_len = 40
             frame_array = np.zeros((window_len, 12), dtype=np.float32)
             recent_frames = buffer[-window_len:]
@@ -235,6 +257,12 @@ class DigitalTwinOrchestrator:
             norm_window = np.clip((frame_array - self.norm_min) / norm_range, 0.0, 1.0)
 
             try:
+                # More than a quarter of non-positional channel values outside
+                # the training range is an unsupported inference domain.
+                meaningful = [i for i, name in enumerate(SENSOR_NAMES) if name != "crank_pos"]
+                outside = (frame_array < self.norm_min) | (frame_array > self.norm_max)
+                if float(outside[:, meaningful].mean()) > 0.25:
+                    raise ValueError("Telemetry outside the trained input range")
                 x_tensor = torch.from_numpy(norm_window).float()
                 audit_dict = self.pinn_model.audit_sample(x_tensor)
                 rul_from_model      = float(audit_dict["rul_cycles"][0])
@@ -255,8 +283,8 @@ class DigitalTwinOrchestrator:
         egt   = audited.get("egt",           667.7)
 
         burn_interval = 55
-        cycles_burned = (cycle // burn_interval) % 35
-        rul_nominal   = 485.0 - cycles_burned   # simple countdown baseline
+        cycles_burned = cycle / burn_interval
+        rul_nominal   = max(14.0, 485.0 - cycles_burned)   # simple countdown baseline
 
         thermal_penalty = max(0.04, float(np.exp(-max(0.0, (cht - 160.0) / 45.0) * 1.8)))   if cht > 160.0 else 1.0
         lube_penalty    = max(0.05, float(np.exp(-max(0.0, (230.0 - oil_p) / 100.0) * 1.6))) if oil_p < 230.0 else 1.0
@@ -269,7 +297,7 @@ class DigitalTwinOrchestrator:
         alpha_rul = 0.08
         if model_active:
             # Real model: EMA targets the model's own RUL prediction
-            self._smoothed_rul = (1.0 - alpha_rul) * self._smoothed_rul + alpha_rul * rul_from_model
+            self._smoothed_rul = (1.0 - alpha_rul) * self._smoothed_rul + alpha_rul * min(rul_from_model, fallback_rul)
             fallback_active = False
         else:
             # Scripted path: EMA targets the Arrhenius estimate
@@ -289,8 +317,7 @@ class DigitalTwinOrchestrator:
         final_rul = max(14.0, self._smoothed_rul)
 
         sustain_hours_total = final_rul * 0.1
-        hours = int(sustain_hours_total)
-        mins  = int(round((sustain_hours_total - hours) * 60))
+        hours, mins = divmod(int(round(sustain_hours_total * 60)), 60)
 
         if final_rul <= 45.0:
             sustain_str  = f"⚠️ {hours}h {mins:02d}m"
@@ -303,7 +330,7 @@ class DigitalTwinOrchestrator:
             mission_status = "OPTIMAL"
 
         # Fourier adherence label is honest about its source
-        if fallback_active if not model_active else not model_active:
+        if fallback_active:
             fourier_label = "DEMO_FALLBACK" if not is_physically_valid else "DEMO_FALLBACK_NOMINAL"
         else:
             fourier_label = "COMPLIANT" if is_physically_valid else "BOUNDARY_DRIFT"
@@ -314,6 +341,7 @@ class DigitalTwinOrchestrator:
             "physics_residual":   round(physics_residual, 4),
             "is_physically_valid": is_physically_valid,
             "fourier_law_adherence": fourier_label,
+            "sensor_bound_applied": model_active and fallback_rul < rul_from_model,
             "model_active":        model_active,           # explicit flag for frontend
             "sustain_flight_hours": round(sustain_hours_total, 1),
             "sustain_flight_str":  sustain_str,
@@ -370,89 +398,63 @@ class DigitalTwinOrchestrator:
     # Fault Classifier Node (Layer 2: N-of-M ensemble majority vote)        #
     # --------------------------------------------------------------------- #
     def fault_classifier_node(self, state: AgentState) -> Dict[str, Any]:
-        """Classifies degradation archetype (vibration, CHT, oil, EGT).
+        """Assess measured faults; retain the uncalibrated model vote separately.
 
-        When 2+ independently-seeded checkpoints are loaded (self.fault_classifiers),
-        each votes independently and the result is majority-decided; disagreement
-        among members becomes `agreement_score`, the escalate-to-human signal
-        consumed by Layer 4's safe-mode gate. With 0-1 models loaded this degrades
-        gracefully to the original single-model/rule-based behavior.
+        The shipped ensemble's documented accuracy does not support treating
+        a high softmax probability as an operational confidence guarantee.
+        Evidence severity is excursion from the caution threshold toward the
+        critical threshold, NOT a class probability.
         """
         buffer = state.get("window_buffer", [])
         audited = state.get("audited_telemetry", {})
-
-        cht = audited.get("cht", 150.0)
-        vib = audited.get("vibration_rms", 1.2)
-        oil_p = audited.get("oil_pressure", 281.8)
-        egt = audited.get("egt", 667.7)
-
-        # Check if engine is in anomalous fault regime
-        is_anomalous = (cht > 175.0 or vib > 2.2 or oil_p < 235.0 or egt > 715.0)
-
-        def rule_based_fallback():
-            if cht > 175.0:
-                fc = "cht_over"
-                conf = min(0.98, max(0.65, cht / 210.0))
-                pr = {"cht_over": conf, "vibration_over": 0.15, "oil_starvation": 0.05, "egt_over": 0.05}
-            elif vib > 2.2:
-                fc = "vibration_over"
-                conf = min(0.98, max(0.65, vib / 3.2))
-                pr = {"cht_over": 0.05, "vibration_over": conf, "oil_starvation": 0.05, "egt_over": 0.05}
-            elif oil_p < 235.0:
-                fc = "oil_starvation"
-                conf = min(0.98, max(0.65, 1.0 - (oil_p - 130.0) / 105.0))
-                pr = {"cht_over": 0.05, "vibration_over": 0.15, "oil_starvation": conf, "egt_over": 0.05}
-            else:
-                fc = "egt_over"
-                conf = min(0.98, max(0.65, egt / 800.0))
-                pr = {"cht_over": 0.15, "vibration_over": 0.05, "oil_starvation": 0.05, "egt_over": conf}
-            return fc, conf, pr
-
-        agreement_score = 1.0  # trivial agreement for the nominal/single-source paths below
-
-        if not is_anomalous:
-            fault_class = "nominal"
-            confidence = 0.98
-            probs = {"cht_over": 0.02, "vibration_over": 0.02, "oil_starvation": 0.02, "egt_over": 0.02}
-        elif len(buffer) >= 5 and self.fault_classifiers:
-            window_len = 40
-            frame_array = np.zeros((window_len, 12), dtype=np.float32)
-            recent_frames = buffer[-window_len:]
-            for t, f in enumerate(recent_frames):
-                idx = window_len - len(recent_frames) + t
-                frame_array[idx] = [f.get(s, 0.0) for s in SENSOR_NAMES]
-            if len(recent_frames) < window_len:
-                frame_array[:window_len - len(recent_frames)] = frame_array[window_len - len(recent_frames)]
-
-            norm_range = np.maximum(self.norm_max - self.norm_min, 1e-6)
-            norm_window = np.clip((frame_array - self.norm_min) / norm_range, 0.0, 1.0)
-
+        corrupted = set(state.get("audit_results", {}).get("corrupted_fields", []))
+        specs = {
+            "cht_over": ("cht", 175.0, 210.0, "°C"),
+            "vibration_over": ("vibration_rms", 2.2, 3.5, "g"),
+            "oil_starvation": ("oil_pressure", 235.0, 180.0, "kPa"),
+            "egt_over": ("egt", 715.0, 800.0, "°C"),
+        }
+        evidence = {}
+        for name, (channel, caution, critical, unit) in specs.items():
+            value = audited.get(channel)
+            available = channel not in corrupted and isinstance(value, (float, int)) and np.isfinite(value)
+            severity = max(0.0, (value - caution) / (critical - caution)) if available else 0.0
+            evidence[name] = {"value": float(value) if available else None, "unit": unit,
+                              "severity": round(severity, 3), "imputed": channel in corrupted}
+        strongest = max(evidence, key=lambda name: evidence[name]["severity"])
+        severity = evidence[strongest]["severity"]
+        source = "sensor_thresholds" if severity > 0 else ("sensor_unavailable" if corrupted else "nominal")
+        fault_class = strongest if severity > 0 else ("sensor_unavailable" if corrupted else "nominal")
+        model_prediction = None
+        if len(buffer) >= 5 and self.fault_classifiers and self.normalization_ready and not corrupted:
+            recent = buffer[-40:]
+            frame_array = np.array([[f.get(name, 0.0) for name in SENSOR_NAMES] for f in recent], dtype=np.float32)
+            if len(recent) < 40:
+                frame_array = np.concatenate([np.repeat(frame_array[:1], 40-len(recent), axis=0), frame_array])
+            normalized = np.clip((frame_array-self.norm_min) / np.maximum(self.norm_max-self.norm_min, 1e-6), 0, 1)
             try:
                 from classifier.fault_classifier import predict_fault_from_window
-                member_results = [predict_fault_from_window(m, norm_window) for m in self.fault_classifiers]
-                member_classes = [r["fault_class"] for r in member_results]
-                fault_class, agreement_score = vote_fault_classification(member_classes)
-                agreeing = [r for r in member_results if r["fault_class"] == fault_class]
-                confidence = float(np.mean([r["confidence"] for r in agreeing])) if agreeing else 0.5
-                # Average per-class probabilities across all members for a smoother gauge display
-                probs = {}
-                for cls in ("cht_over", "vibration_over", "oil_starvation", "egt_over"):
-                    probs[cls] = float(np.mean([r["probabilities"].get(cls, 0.0) for r in member_results]))
+                results = [predict_fault_from_window(model, normalized) for model in self.fault_classifiers]
+                model_class, agreement = vote_fault_classification([r["fault_class"] for r in results])
+                probabilities = {name: float(np.mean([r["probabilities"].get(name, 0) for r in results])) for name in specs}
+                model_prediction = {"fault_class": model_class, "confidence": probabilities[model_class],
+                                    "agreement_score": agreement, "probabilities": probabilities}
             except Exception:
-                fault_class, confidence, probs = rule_based_fallback()
-                agreement_score = 1.0
-        else:
-            fault_class, confidence, probs = rule_based_fallback()
-
-        fault_results = {
+                pass
+        # No calibrated confidence exists for the threshold assessment. A
+        # detected fault requests operator review rather than granting control
+        # based on an unrelated model's confident guess.
+        return {"fault_results": {
             "predicted_fault": fault_class,
-            "confidence": round(confidence, 3),
-            "probabilities": probs,
-            "agreement_score": round(agreement_score, 3),
+            "confidence": 1.0 if source == "nominal" else 0.0,
+            "probabilities": {},
+            "agreement_score": model_prediction["agreement_score"] if model_prediction else 1.0,
             "ensemble_size": len(self.fault_classifiers),
-            "severity": "CRITICAL" if confidence > 0.8 and is_anomalous else ("NOMINAL" if not is_anomalous else "MODERATE"),
-        }
-        return {"fault_results": fault_results}
+            "assessment_source": source,
+            "evidence": evidence,
+            "model_prediction": model_prediction,
+            "severity": "CRITICAL" if severity >= 1 else ("MODERATE" if source != "nominal" else "NOMINAL"),
+        }}
 
     # --------------------------------------------------------------------- #
     # Tool 2: DRL Prognostic Tool Node                                      #
@@ -520,13 +522,18 @@ class DigitalTwinOrchestrator:
             confidence=fault.get("confidence", 1.0),
         )
         drl_results["action_mode"] = action_mode
-        if action_mode == "SAFE_MODE_ESCALATE_TO_HUMAN" and drl_results.get("shield_applied"):
+        if action_mode == "SAFE_MODE_ESCALATE_TO_HUMAN":
             drl_results["delta_throttle"] = 0.0
             drl_results["delta_mixture"] = 0.0
-            drl_results["recommendation"] = (
-                "SAFE MODE: low ensemble agreement or unverified telemetry — "
-                "holding last known-good setting, escalated to operator"
-            )
+            drl_results["projected_extension_cycles"] = 0.0
+            drl_results["adjusted_rul"] = round(rul, 1)
+            self._smoothed_extension = 0.0
+            cause = {
+                "cht_over": "cylinder overheating", "egt_over": "high exhaust temperature",
+                "vibration_over": "elevated bearing vibration", "oil_starvation": "low oil pressure",
+                "sensor_unavailable": "unavailable sensor readings",
+            }.get(fault.get("predicted_fault"), "uncertain sensor evidence")
+            drl_results["recommendation"] = f"Operator review required: {cause}. Automatic changes are on hold."
 
         return {"drl_results": drl_results}
 
@@ -644,6 +651,8 @@ class DigitalTwinOrchestrator:
 
         dispatch_payload = {
             "cycle": state.get("cycle", 0),
+            "normalization_source": self.normalization_source,
+            "rul_source": ("model_with_sensor_limit" if pinn.get("sensor_bound_applied") else "pinn_model") if pinn.get("model_active") else "sensor_estimate",
             "telemetry": audited,
             "environment": {
                 "altitude": audited.get("altitude", 12500.0),
@@ -663,6 +672,10 @@ class DigitalTwinOrchestrator:
             "is_physically_valid": pinn.get("is_physically_valid", True),
             "fault_archetype": fault.get("predicted_fault", "nominal"),
             "fault_confidence": fault.get("confidence", 0.0),
+            "fault_assessment_source": fault.get("assessment_source"),
+            "fault_evidence": fault.get("evidence", {}),
+            "fault_model_prediction": fault.get("model_prediction"),
+            "fault_severity": fault.get("severity", "NOMINAL"),
             "fault_probabilities": fault.get("probabilities", {}),
             "fault_agreement_score": fault.get("agreement_score", 1.0),
             "fault_ensemble_size": fault.get("ensemble_size", 0),

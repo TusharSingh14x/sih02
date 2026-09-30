@@ -277,15 +277,10 @@ export class TelemetryStore {
     // Store frame snapshot for 3D state replay in FIXED conductor mode
     if (fullFrame) {
       this.frames.push({
+        ...structuredClone(fullFrame),
         time: timeSec,
         telemetry: { ...telemetryObj },
-        component_health: fullFrame.component_health ? { ...fullFrame.component_health } : null,
         adjusted_rul: fullFrame.adjusted_rul ?? fullFrame.rul_cycles,
-        fault_archetype: fullFrame.fault_archetype,
-        fault_probabilities: fullFrame.fault_probabilities ? { ...fullFrame.fault_probabilities } : null,
-        drl_action: fullFrame.drl_action ? { ...fullFrame.drl_action } : null,
-        sensor_audit: fullFrame.sensor_audit ? { ...fullFrame.sensor_audit } : null,
-        is_physically_valid: fullFrame.is_physically_valid ?? true,
       });
       if (this.frames.length > this.maxFrames) {
         this.frames.shift();

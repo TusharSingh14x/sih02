@@ -17,36 +17,36 @@
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+  <link rel="stylesheet" href="/static/workbench.css?v=20260930_01">
 </head>
 
-<body>
+<body class="light-theme ops-page">
 
   <!-- Top Aerospace Navbar -->
   <header class="top-navbar">
     <div class="brand-section">
       <a href="/dashboard" class="drdo-badge" style="text-decoration:none; display:inline-block;" title="Back to PRAHARI Dashboard">PRAHARI</a>
       <div class="system-title">
-        <h1>TAPAS MALE UAV — AERO PROPULSION DIGITAL TWIN</h1>
-        <p>DRDO / SIH26054 · AGENTIC PINN-DRL PROGNOSTIC & MISSION RELIABILITY SYSTEM</p>
+        <h1>Engine operations</h1>
+        <p>TAPAS-BH-201 / Rotax 914F · Simulation workspace</p>
       </div>
     </div>
 
     <div class="header-status-strip">
       <div class="status-pill">
         <span class="pulse-dot"></span>
-        <span id="ws-status">INITIALIZING...</span>
+        <span id="ws-status">Connecting…</span>
       </div>
       <div class="status-pill">
-        <span style="color:var(--accent-sky);">FAIL-SAFE RECOVERY:</span>
-        <span style="color:var(--accent-emerald); font-weight:700;">77.5% EDGE AUTO</span>
+        <span style="color:var(--accent-sky);">Simulation</span>
+        <span style="color:var(--accent-emerald); font-weight:700;">Rotax 914F</span>
       </div>
       <button class="header-btn theme-toggle-btn" id="btn-theme-toggle" title="Toggle Day / Night Tactical Mode">
-        <span id="theme-icon">☀️</span> <span id="theme-text">DAY MODE</span>
+        <span id="theme-icon">◐</span> <span id="theme-text">Dark view</span>
       </button>
       <button class="header-btn" id="btn-architecture"
-        style="background: linear-gradient(135deg, rgba(14, 165, 233, 0.25), rgba(99, 102, 241, 0.25)); border-color: var(--accent-sky); font-weight:700;">ARCHITECTURE
-        & FLOW</button>
-      <button class="header-btn" id="btn-benchmarks">BENCHMARKS MATRIX</button>
+        style="background: linear-gradient(135deg, rgba(14, 165, 233, 0.25), rgba(99, 102, 241, 0.25)); border-color: var(--accent-sky); font-weight:700;">Architecture</button>
+      <button class="header-btn" id="btn-benchmarks">Benchmarks</button>
     </div>
   </header>
 
@@ -63,16 +63,16 @@
     </div>
     <div class="status-summary-strip">
       <div class="status-summary-item">
-        <span>TIME CONDUCTOR:</span>
+        <span>Playback</span>
         <span id="conductor-status-badge" class="conductor-mode-pill mode-live">LIVE (10 Hz)</span>
       </div>
       <div class="status-summary-item">
-        <span>MISSION T+:</span>
-        <strong id="mission-t-clock" class="tnum">00:42:15</strong>
+        <span>Elapsed</span>
+        <strong id="mission-t-clock" class="tnum">00:00:00</strong>
       </div>
       <div class="status-summary-item">
-        <span>DATA INTEGRITY:</span>
-        <strong id="data-integrity-status" style="color:#3fb950;">100% (AUDITED)</strong>
+        <span>Sensor audit</span>
+        <strong id="data-integrity-status" style="color:#3fb950;">Awaiting data</strong>
       </div>
     </div>
   </div>
@@ -84,8 +84,8 @@
     <aside class="left-sidebar">
       <div class="hud-panel">
         <div class="panel-title">
-          <span>Telemetry Parameter Rail</span>
-          <span class="panel-badge">10 Hz TABULAR</span>
+          <span>Engine readings</span>
+          <span class="panel-badge">10 Hz</span>
         </div>
 
         <!-- Dynamically populated ParameterRows with canvas sparklines & limit bars -->
@@ -97,8 +97,8 @@
       <!-- Component Health Matrix -->
       <div class="hud-panel">
         <div class="panel-title">
-          <span>Subassembly Health</span>
-          <span class="panel-badge">DIGITAL TWIN</span>
+          <span>Component condition</span>
+          <span class="panel-badge">Overview</span>
         </div>
         <div class="component-matrix">
           <div class="comp-card" id="card-cylinder_head">
@@ -164,65 +164,65 @@
     <section class="center-viewport">
       <div class="canvas-container" style="flex: 1; position: relative; min-height: 320px; overflow: hidden;">
         <canvas id="webgl-canvas"></canvas>
+        <div id="viewport-error" class="viewport-error" role="status" hidden>3D view unavailable. Telemetry and diagnostics remain available. Reload to retry the model.</div>
         <canvas id="leader-line-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:5;"></canvas>
 
         <!-- Top-Left UAV Identifier Badge -->
-        <div class="viewport-uav-pill">TAPAS MALE UAV - AERO PROPULSION DIGITAL TWIN</div>
+        <div class="viewport-uav-pill">TAPAS-BH-201 · Digital twin</div>
 
         <!-- Top-Right View Manager Overlay (Feature from image_2.png) -->
         <div class="viewport-view-manager">
-          <div class="vm-title">VIEW MANAGER</div>
+          <div class="vm-title">Inspect</div>
           <div class="vm-btn-group">
-            <button class="vm-btn active" data-view="overview">AIRCRAFT OVERVIEW</button>
-            <button class="vm-btn" data-view="propulsion">PROPULSION UNIT</button>
-            <button class="vm-btn" data-view="systems">SYSTEM DIAGRAMS</button>
+            <button class="vm-btn active" data-view="overview">Aircraft</button>
+            <button class="vm-btn" data-view="propulsion">Engine</button>
+            <button class="vm-btn" data-view="systems">Systems</button>
           </div>
         </div>
 
         <!-- Bottom-Left Propulsion Controls Overlay -->
         <div class="viewport-propulsion-controls">
-          <div class="pc-title">PROPULSION CONTROLS</div>
+          <div class="pc-title">Model controls</div>
           <div class="pc-controls">
             <div class="pc-slider-row">
-              <span class="pc-label">EXPLODED VIEW:</span>
-              <input type="range" id="exploded-slider" min="0" max="100" step="1" value="0">
+              <span class="pc-label">Explode</span>
+              <input type="range" id="exploded-slider" aria-label="Exploded view amount" min="0" max="100" step="1" value="0">
               <span id="exploded-val" class="pc-val">0%</span>
             </div>
-            <button class="pc-btn active" id="btn-heatmap">GLSL HEATMAP</button>
-            <button class="pc-btn pc-zoom-btn" id="btn-zoom-in" title="Zoom In Camera (or scroll wheel)">➕ ZOOM
-              IN</button>
-            <button class="pc-btn pc-zoom-btn" id="btn-zoom-out" title="Zoom Out Camera (or scroll wheel)">➖ ZOOM
-              OUT</button>
-            <button class="pc-btn" id="btn-reset-view">RESET CAMERA</button>
+            <button class="pc-btn active" id="btn-heatmap" aria-pressed="true">Heatmap</button>
+            <button class="pc-btn" id="btn-annotations" aria-pressed="false">Annotations</button>
+            <button class="pc-btn pc-zoom-btn" id="btn-zoom-in" title="Zoom In Camera (or scroll wheel)">+ Zoom</button>
+            <button class="pc-btn pc-zoom-btn" id="btn-zoom-out" title="Zoom Out Camera (or scroll wheel)">− Zoom</button>
+            <button class="pc-btn" id="btn-reset-view">Reset view</button>
           </div>
         </div>
 
         <!-- Native Cross-Section Clipping Controls -->
         <div class="viewport-clipping-controls" id="viewport-clipping-controls">
           <div class="clip-title">
-            <span>CROSS-SECTION SLICING</span>
+            <span>Cross section</span>
             <span style="color:#6b7785; font-size:9px;">CAD/X-RAY</span>
           </div>
           <div class="clip-row">
-            <input type="checkbox" id="clip-chk-x">
+            <input type="checkbox" id="clip-chk-x" aria-label="Enable X cross section">
             <span class="clip-axis-label">X</span>
-            <input type="range" id="clip-slide-x" min="-3" max="3" step="0.05" value="0" class="clip-slider">
+            <input type="range" id="clip-slide-x" aria-label="X cross section position" min="-3" max="3" step="0.05" value="0" class="clip-slider">
           </div>
           <div class="clip-row">
-            <input type="checkbox" id="clip-chk-y">
+            <input type="checkbox" id="clip-chk-y" aria-label="Enable Y cross section">
             <span class="clip-axis-label">Y</span>
-            <input type="range" id="clip-slide-y" min="-3" max="3" step="0.05" value="0" class="clip-slider">
+            <input type="range" id="clip-slide-y" aria-label="Y cross section position" min="-3" max="3" step="0.05" value="0" class="clip-slider">
           </div>
           <div class="clip-row">
-            <input type="checkbox" id="clip-chk-z">
+            <input type="checkbox" id="clip-chk-z" aria-label="Enable Z cross section">
             <span class="clip-axis-label">Z</span>
-            <input type="range" id="clip-slide-z" min="-3" max="3" step="0.05" value="0" class="clip-slider">
+            <input type="range" id="clip-slide-z" aria-label="Z cross section position" min="-3" max="3" step="0.05" value="0" class="clip-slider">
           </div>
         </div>
 
         <!-- Heatmap Color Legend -->
         <div class="heatmap-legend">
-          <span>VOLUMETRIC THERMAL GRADIENT (CHT & EGT)</span>
+          <span>Temperature scale</span>
           <div class="legend-bar"
             style="background: linear-gradient(to right, #0f3899, #14a6e0, #1fc95c, #f5d020, #f77011, #e61c14, #fff1db);">
           </div>
@@ -239,8 +239,8 @@
       <div class="strip-charts-panel">
         <div class="strip-charts-header">
           <div class="strip-title-wrap">
-            <span>MULTI-CHANNEL STRIP CHARTS</span>
-            <span style="font-size:9px; color:#8b949e;">(120 s SYNCHRONIZED TIME AXIS WITH LIMIT BANDS)</span>
+            <span>Sensor history</span>
+            <span style="font-size:9px; color:#8b949e;">Last 2 minutes</span>
           </div>
           <div class="strip-legend-row">
             <div class="strip-legend-item">
@@ -272,19 +272,19 @@
 
       <!-- NASA Open MCT Time Conductor (Bidirectional Live / Fixed Scrubber) -->
       <div class="time-conductor-bar">
-        <div class="conductor-mode-pill mode-live" id="btn-conductor-mode" title="Click to freeze historical window or resume live streaming">
+        <button type="button" class="conductor-mode-pill mode-live" id="btn-conductor-mode" title="Click to freeze historical window or resume live streaming">
           LIVE (NOW)
-        </div>
+        </button>
         <button class="replay-btn" id="btn-conductor-step-back" title="Rewind 10 seconds">⏮ -10s</button>
         <button class="replay-btn play-btn" id="btn-conductor-play-pause">⏸ FREEZE</button>
         <button class="replay-btn" id="btn-conductor-step-fwd" title="Forward 10 seconds">⏭ +10s</button>
         <div class="conductor-scrubber-wrap">
           <div class="conductor-scrubber-meta">
             <span id="conductor-time-start">-120s</span>
-            <span id="conductor-time-current" style="color:#58a6ff; font-weight:700;">LIVE (T+00:42:15)</span>
+            <span id="conductor-time-current" style="color:#58a6ff; font-weight:700;">LIVE (T+00:00:00)</span>
             <span id="conductor-time-end">NOW</span>
           </div>
-          <input type="range" id="conductor-timeline" min="0" max="1200" step="1" value="1200" class="conductor-slider">
+          <input type="range" id="conductor-timeline" aria-label="Replay timeline" min="0" max="1200" step="1" value="1200" class="conductor-slider">
         </div>
         <button class="replay-btn" id="btn-conductor-resume" style="background:rgba(63,185,80,0.18); border-color:#3fb950; color:#3fb950;">
           RESUME LIVE
@@ -293,46 +293,47 @@
     </section>
 
     <!-- Right Sidebar: AI Models & Agentic Loop HUD -->
-    <aside class="right-sidebar">
+    <aside class="right-sidebar" aria-label="Engine analysis" tabindex="0">
+      <div class="analysis-heading"><span>Engine analysis</span><span id="analysis-status" role="status">Waiting for telemetry…</span></div>
 
       <!-- PINN Hero Prognostic Card -->
       <div class="hud-panel">
         <div class="panel-title">
-          <span>The Physics Guardian (PINN)</span>
-          <span class="panel-badge">TOOL 1</span>
+          <span>Remaining engine life</span>
+          <span class="panel-badge">PINN estimate</span>
         </div>
 
         <div class="rul-hero-card" id="rul-hero-card">
           <div class="rul-card-top">
-            <span class="rul-title">Remaining Useful Life (RUL)</span>
-            <span class="rul-status-pill status-ok" id="rul-status-badge">🟢 OPTIMAL</span>
+            <span class="rul-title">Estimated life remaining</span>
+            <span class="rul-status-pill status-ok" id="rul-status-badge">Awaiting data</span>
           </div>
           <div class="rul-value-wrap">
-            <span class="rul-number" id="rul-number">485</span>
-            <span class="rul-unit">CYCLES</span>
+            <span class="rul-number" id="rul-number">—</span>
+            <span class="rul-unit">cycles</span>
           </div>
           <div class="rul-time-row" id="rul-time-row">
-            <span class="rul-time-label">⏱️ SUSTAIN TIME:</span>
-            <span class="rul-time-val" id="rul-time-val">48h 30m Mission Endurance</span>
+            <span class="rul-time-label">Endurance</span>
+            <span class="rul-time-val" id="rul-time-val">Awaiting telemetry</span>
           </div>
           <div class="rul-extension-wrap">
-            <span class="rul-extension-tag" id="rul-extension">+15.0 cyc (DRL Protected)</span>
-            <span class="rul-time-ext" id="rul-time-ext">(+1h 30m Saved)</span>
+            <span class="rul-extension-tag" id="rul-extension">Gain unavailable</span>
+            <span class="rul-time-ext" id="rul-time-ext"></span>
           </div>
         </div>
 
         <div class="ai-detail-group">
           <div class="ai-detail-row">
-            <span class="ai-detail-label">Fourier Energy Residual</span>
-            <span class="ai-detail-val" id="fourier-residual">0.239 °C</span>
+            <span class="ai-detail-label">Thermal residual</span>
+            <span class="ai-detail-val" id="fourier-residual">—</span>
           </div>
           <div class="ai-detail-row">
-            <span class="ai-detail-label">Thermal Gradient (dT/dt)</span>
-            <span class="ai-detail-val" id="physical-gradient">0.018 °C/cyc</span>
+            <span class="ai-detail-label">Temperature trend</span>
+            <span class="ai-detail-val" id="physical-gradient">—</span>
           </div>
           <div class="ai-detail-row">
-            <span class="ai-detail-label">Thermodynamic Law Status</span>
-            <span class="ai-detail-val status-badge-ok" id="fourier-adherence">100% COMPLIANT</span>
+            <span class="ai-detail-label">Physics check</span>
+            <span class="ai-detail-val status-badge-ok" id="fourier-adherence">Not available</span>
           </div>
         </div>
       </div>
@@ -340,20 +341,20 @@
       <!-- Multi-Class Fault Classifier -->
       <div class="hud-panel">
         <div class="panel-title">
-          <span>Fault Archetype Classifier</span>
-          <span class="panel-badge" id="fault-conf">100% CONF</span>
+          <span>Fault assessment</span>
+          <span class="panel-badge" id="fault-conf">—</span>
         </div>
         <div class="fault-active-banner">
           <span class="fault-active-dot"></span>
-          <span class="fault-active-label">DETECTED:</span>
-          <span class="fault-active-name" id="fault-name">OIL STARVATION</span>
+          <span class="fault-active-label">Likely cause</span>
+          <span class="fault-active-name" id="fault-name">Awaiting telemetry</span>
         </div>
 
         <div class="fault-meter-list">
           <div class="fault-meter-row">
             <div class="fault-meter-header">
               <span class="fault-tag">CHT Overheat</span>
-              <span class="fault-pct" id="fault-pct-cht_over">0%</span>
+              <span class="fault-pct" id="fault-pct-cht_over">—</span>
             </div>
             <div class="fault-bar-bg">
               <div class="fault-bar-fill" id="fault-bar-cht_over" style="width: 0%; background: var(--accent-amber);">
@@ -363,7 +364,7 @@
           <div class="fault-meter-row">
             <div class="fault-meter-header">
               <span class="fault-tag">Vibration Fatigue</span>
-              <span class="fault-pct" id="fault-pct-vibration_over">0%</span>
+              <span class="fault-pct" id="fault-pct-vibration_over">—</span>
             </div>
             <div class="fault-bar-bg">
               <div class="fault-bar-fill" id="fault-bar-vibration_over"
@@ -373,17 +374,17 @@
           <div class="fault-meter-row">
             <div class="fault-meter-header">
               <span class="fault-tag">Oil Starvation</span>
-              <span class="fault-pct" id="fault-pct-oil_starvation">100%</span>
+              <span class="fault-pct" id="fault-pct-oil_starvation">—</span>
             </div>
             <div class="fault-bar-bg">
               <div class="fault-bar-fill" id="fault-bar-oil_starvation"
-                style="width: 100%; background: #c084fc; box-shadow: 0 0 10px #c084fc;"></div>
+                style="width: 0%; background: var(--accent-sky);"></div>
             </div>
           </div>
           <div class="fault-meter-row">
             <div class="fault-meter-header">
               <span class="fault-tag">EGT Surge</span>
-              <span class="fault-pct" id="fault-pct-egt_over">0%</span>
+              <span class="fault-pct" id="fault-pct-egt_over">—</span>
             </div>
             <div class="fault-bar-bg">
               <div class="fault-bar-fill" id="fault-bar-egt_over" style="width: 0%; background: #f97316;"></div>
@@ -395,21 +396,21 @@
       <!-- DRL Prognostic Strategist -->
       <div class="hud-panel">
         <div class="panel-title">
-          <span>Prognostic Strategist (DRL)</span>
-          <span class="panel-badge">TOOL 2</span>
+          <span>Operating recommendation</span>
+          <span class="panel-badge">Policy</span>
         </div>
         <div class="drl-action-card">
           <div class="drl-action-header">
-            <span>🛡️ CLOSED-LOOP POLICY ADVICE</span>
+            <span>Suggested action</span>
           </div>
           <div class="drl-action-text" id="drl-text">
-            Maintain nominal cruise throttle
+            Waiting for an operating recommendation.
           </div>
           <div class="pinn-shield-badge" id="drl-shield-badge" style="display: none;">
-            <span>⚠️ PINN SAFETY SHIELD ENGAGED</span>
+            <span>Safety override active</span>
           </div>
           <div style="font-size:9px; color:#6b7785; margin-top:6px;" title="Dispatch writes directly to the in-process simulation state — no real flight-control protocol is implemented.">
-            ⤷ SIMULATED AUTOPILOT UPLINK (STANAG 4586-style de-rate dispatch)
+            Applied to the simulator. No aircraft control link.
           </div>
         </div>
       </div>
@@ -417,35 +418,35 @@
       <!-- Defense-Grade Layered Architecture Status (Layers 1-4) -->
       <div class="hud-panel">
         <div class="panel-title">
-          <span>Defense-Layer Status</span>
-          <span class="panel-badge">L1-L5</span>
+          <span>System checks</span>
+          <span class="panel-badge">5 layers</span>
         </div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 10px; font-size:10px; padding:2px 2px 6px;">
-          <div style="color:#6b7785;">ENSEMBLE AGREEMENT</div>
+          <div style="color:#6b7785;">Model agreement</div>
           <div id="defense-agreement" style="color:#c8d1dc; font-family:'JetBrains Mono',monospace; text-align:right;">—</div>
-          <div style="color:#6b7785;">ACTION MODE</div>
+          <div style="color:#6b7785;">Control mode</div>
           <div id="defense-action-mode" style="font-family:'JetBrains Mono',monospace; text-align:right; color:#3fb950;">—</div>
-          <div style="color:#6b7785;">COMMS INTEGRITY</div>
+          <div style="color:#6b7785;">Packet integrity</div>
           <div id="defense-integrity" style="color:#c8d1dc; font-family:'JetBrains Mono',monospace; text-align:right;">—</div>
-          <div style="color:#6b7785;">TREND / PHM RISK</div>
+          <div style="color:#6b7785;">Degradation risk</div>
           <div id="defense-trend-risk" style="color:#c8d1dc; font-family:'JetBrains Mono',monospace; text-align:right;">—</div>
         </div>
       </div>
 
-      <!-- AI Diagnostic Router — ground-station-triggered on-demand deep-dive,
+      <!-- Run a diagnostic — ground-station-triggered on-demand deep-dive,
            routed through the intent-conditional StateGraph (distinct from the
            continuous 10 Hz graph). See src/agent/orchestrator.py::run_diagnostic. -->
       <div class="hud-panel">
         <div class="panel-title">
-          <span>AI Diagnostic Router</span>
-          <span class="panel-badge">GROUND CTRL</span>
+          <span>Run a diagnostic</span>
+          <span class="panel-badge">On demand</span>
         </div>
         <div style="display:flex; flex-direction:column; gap:6px; padding:2px 2px 8px;">
-          <button class="pc-btn" id="btn-diag-sensor" style="text-align:left; font-size:10px;">⚙ SENSOR INTEGRITY CHECK</button>
-          <button class="pc-btn" id="btn-diag-thermal" style="text-align:left; font-size:10px;">🌡 THERMAL STRESS ANALYSIS</button>
-          <button class="pc-btn" id="btn-diag-rootcause" style="text-align:left; font-size:10px;">🔍 ROOT CAUSE DIAGNOSTIC</button>
+          <button class="pc-btn" id="btn-diag-sensor" style="text-align:left; font-size:10px;">Check sensor integrity</button>
+          <button class="pc-btn" id="btn-diag-thermal" style="text-align:left; font-size:10px;">Analyze thermal stress</button>
+          <button class="pc-btn" id="btn-diag-rootcause" style="text-align:left; font-size:10px;">Investigate root cause</button>
         </div>
-        <div id="diag-result" style="font-size:10px; color:#8b949e; padding:6px 2px; line-height:1.6; border-top:1px solid #1e2733; margin-top:2px; display:none;">
+        <div role="status" id="diag-result" style="font-size:10px; color:#8b949e; padding:6px 2px; line-height:1.6; border-top:1px solid #1e2733; margin-top:2px; display:none;">
           <div id="diag-branch" style="color:#58a6ff; font-weight:700; margin-bottom:4px;"></div>
           <div id="diag-summary" style="color:#c8d1dc; margin-bottom:4px;"></div>
           <div id="diag-gate" style="margin-bottom:4px;"></div>
@@ -458,15 +459,14 @@
            rate-limited server-side; see src/agent/llm_advisor.py. -->
       <div class="hud-panel">
         <div class="panel-title">
-          <span>AI Advisor (GLM)</span>
+          <span>Model-assisted review</span>
           <span class="panel-badge" id="advisor-quota-badge">— / —</span>
         </div>
-        <button class="pc-btn active" id="btn-ai-advise" style="width:100%; text-align:left; font-size:10px;">🧠 ASK AI ADVISOR</button>
+        <button class="pc-btn active" id="btn-ai-advise" style="width:100%; text-align:left; font-size:10px;">Request a review</button>
         <p style="font-size:9px; color:#6b7785; margin:6px 2px 0;">
-          Reasons only from real computed values above (ensemble agreement, PINN residual, trend risk) — never
-          invents readings. Rate-limited; does not change the classifier's trained accuracy.
+          Uses the current telemetry and model outputs to suggest a diagnostic. Review suggestions before acting.
         </p>
-        <div id="advisor-result" style="font-size:10px; color:#8b949e; padding:6px 2px; line-height:1.6; border-top:1px solid #1e2733; margin-top:6px; display:none;">
+        <div role="status" id="advisor-result" style="font-size:10px; color:#8b949e; padding:6px 2px; line-height:1.6; border-top:1px solid #1e2733; margin-top:6px; display:none;">
           <div id="advisor-synthesis" style="color:#c8d1dc; margin-bottom:6px;"></div>
           <div id="advisor-recommendation" style="color:#58a6ff; font-weight:700; margin-bottom:4px;"></div>
           <div id="advisor-triggered" style="color:#3fb950; margin-bottom:4px;"></div>
@@ -477,7 +477,7 @@
       <!-- Dedicated Event Log (NASA Open MCT Standard) -->
       <div class="hud-panel">
         <div class="panel-title">
-          <span>Mission Events & State Transitions</span>
+          <span>Mission events</span>
           <span class="panel-badge" id="event-count-badge">0 EVENTS</span>
         </div>
         <div class="event-log-container" id="event-log-container">
@@ -492,17 +492,17 @@
     <!-- Bottom: Interactive Fault Injection & DRDO Evaluation Controls -->
     <footer class="bottom-bar">
       <div class="injection-group">
-        <span class="injection-label">FAULT INJECTION TESTBED:</span>
-        <button class="inject-btn" data-fault="">✓ NOMINAL CRUISE</button>
-        <button class="inject-btn" data-fault="thermal_shock">⚡ THERMAL SURGE (CHT)</button>
-        <button class="inject-btn" data-fault="sensor_dropout">📉 SENSOR SIGNAL CORRUPTION</button>
-        <button class="inject-btn" data-fault="oil_leak">🛢️ OIL PRESSURE LOSS</button>
-        <button class="inject-btn" data-fault="vibration_spike">📳 BEARING VIBRATION SPIKE</button>
-        <button class="inject-btn" data-fault="sensor_drift" title="Gradual calibration bias ramping over ~40s — tests trend/PHM detection rather than an instant threshold">📈 SLOW SENSOR DRIFT</button>
+        <span class="injection-label">Test scenario</span>
+        <button class="inject-btn" data-fault="">Nominal</button>
+        <button class="inject-btn" data-fault="thermal_shock">Thermal surge</button>
+        <button class="inject-btn" data-fault="sensor_dropout">Sensor dropout</button>
+        <button class="inject-btn" data-fault="oil_leak">Oil pressure loss</button>
+        <button class="inject-btn" data-fault="vibration_spike">Bearing vibration</button>
+        <button class="inject-btn" data-fault="sensor_drift" title="Gradual calibration bias ramping over ~40s — tests trend/PHM detection rather than an instant threshold">Sensor drift</button>
       </div>
       <div>
         <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">
-          TAPAS-BH-201 MALE UAV DIGITAL TWIN • SIH 2026
+          <span id="injection-status" role="status">Choose a scenario to test the response.</span>
         </span>
       </div>
     </footer>
@@ -510,10 +510,10 @@
   </main>
 
   <!-- Benchmarks Modal -->
-  <div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal-backdrop" id="modal-backdrop" role="dialog" aria-modal="true" aria-label="Benchmarks">
     <div class="modal-box">
       <div class="modal-header">
-        <h2>Benchmark Metrics & Technical Comparison (SIH 2026 Presentation)</h2>
+        <h2>Model benchmarks</h2>
         <button class="modal-close-btn" id="modal-close">&times;</button>
       </div>
 
@@ -521,10 +521,10 @@
         <thead>
           <tr>
             <th>Performance Metric</th>
-            <th>Traditional Pure DL</th>
-            <th>Traditional Modular DT</th>
-            <th>Our Agentic PINN + DRL</th>
-            <th>Measurable Gain</th>
+            <th>CNN · PCA baseline</th>
+            <th>CNN · raw channels</th>
+            <th>Current result</th>
+            <th>Notes</th>
           </tr>
         </thead>
         <tbody id="benchmark-tbody">
@@ -533,16 +533,14 @@
       </table>
 
       <div style="font-size: 11px; color: var(--text-muted); margin-top: 14px; line-height: 1.5;">
-        <strong style="color:var(--accent-sky);">Key Rigor Summary:</strong> Fourier's law constraint eliminates
-        unphysical hallucinations under extreme UAV flight transients. The LangGraph cyclic state machine actively
-        audits incoming payloads to prevent silent error cascades (achieving 77.5% automated edge recovery). The DRL
-        action space is hard-bounded by PINN safety limits to eliminate catastrophic exploration during flight.
+        Results are read from trained checkpoint metadata. “Pending” means a result is not available.
+        Training metrics do not establish performance on live aircraft.
       </div>
     </div>
   </div>
 
   <!-- Architecture & System Flow Modal -->
-  <div class="modal-backdrop" id="modal-architecture">
+  <div class="modal-backdrop" id="modal-architecture" role="dialog" aria-modal="true" aria-label="Architecture">
     <div class="modal-box modal-lg">
       <div class="modal-header">
         <div>
@@ -839,9 +837,9 @@
     </div>
   </div>
 
-  <script src="/static/engine_3d.js?v=20260914_02"></script>
-  <script type="module" src="/static/telemetry_store.js?v=20260914_02"></script>
-  <script type="module" src="/static/app.js?v=20260914_02"></script>
+  <script src="/static/engine_3d.js?v=20260930_01"></script>
+  <script type="module" src="/static/telemetry_store.js?v=20260930_01"></script>
+  <script type="module" src="/static/app.js?v=20260930_01"></script>
 </body>
 
 </html>

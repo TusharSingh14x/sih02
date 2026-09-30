@@ -62,14 +62,16 @@ class AeroEngine3D {
     this.animate();
 
     window.addEventListener('resize', () => this.onResize());
+    this.resizeObserver = new ResizeObserver(() => this.onResize());
+    this.resizeObserver.observe(this.canvas.parentElement);
   }
 
   initScene() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x060911);
+    this.scene.background = new THREE.Color(0x242a26);
 
-    const width = this.canvas.clientWidth || 900;
-    const height = this.canvas.clientHeight || 550;
+    const width = this.canvas.parentElement.clientWidth || 900;
+    const height = this.canvas.parentElement.clientHeight || 550;
 
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
     this.camera.position.copy(this.targetCameraPos);
@@ -81,7 +83,7 @@ class AeroEngine3D {
       powerPreference: "high-performance"
     });
     this.renderer.localClippingEnabled = true;
-    this.renderer.setSize(width, height);
+    this.renderer.setSize(width, height, false);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -766,6 +768,8 @@ class AeroEngine3D {
 
     this.gridHelper = new THREE.GridHelper(20, 20, 0x1e293b, 0x0f172a);
     this.gridHelper.position.y = -1.2;
+    this.gridHelper.material.transparent = true;
+    this.gridHelper.material.opacity = 0.12;
     this.scene.add(this.gridHelper);
 
     // Shadow-catcher ground plane (invisible, receives soft contact shadow only)
@@ -806,7 +810,7 @@ class AeroEngine3D {
     topLight.position.set(0, 6, 0);
     envScene.add(topLight);
 
-    this.scene.environment = pmremGenerator.fromScene(envScene, 0.045).texture;
+    this.scene.environment = pmremGenerator.fromScene(envScene, 0.035).texture;
     pmremGenerator.dispose();
   }
 
@@ -819,13 +823,13 @@ class AeroEngine3D {
       this.composer = null;
       return;
     }
-    const width = this.canvas.clientWidth || 900;
-    const height = this.canvas.clientHeight || 550;
+    const width = this.canvas.parentElement.clientWidth || 900;
+    const height = this.canvas.parentElement.clientHeight || 550;
 
     this.composer = new THREE.EffectComposer(this.renderer);
     this.composer.addPass(new THREE.RenderPass(this.scene, this.camera));
 
-    this.bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(width, height), 0.55, 0.35, 0.86);
+    this.bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(width, height), 0.08, 0.35, 0.94);
     this.composer.addPass(this.bloomPass);
   }
 
@@ -841,13 +845,14 @@ class AeroEngine3D {
   }
 
   setTheme(theme) {
+    this.lightTheme = theme === 'day' || theme === 'light';
     if (theme === 'day' || theme === 'light') {
-      this.scene.background.setHex(0xe2e8f0);
+      this.scene.background.setHex(0xe6e8de);
       if (this.ambientLight) this.ambientLight.intensity = 1.35;
       if (this.dirLight1) this.dirLight1.intensity = 1.6;
-      if (this.gridHelper) this.gridHelper.material.color.setHex(0x94a3b8);
+      if (this.gridHelper) this.gridHelper.material.color.setHex(0xaeb8a7);
     } else {
-      this.scene.background.setHex(0x060911);
+      this.scene.background.setHex(0x242a26);
       if (this.ambientLight) this.ambientLight.intensity = 0.9;
       if (this.dirLight1) this.dirLight1.intensity = 1.3;
       if (this.gridHelper) this.gridHelper.material.color.setHex(0x1e293b);
@@ -983,13 +988,13 @@ class AeroEngine3D {
   // -------------------------------------------------------------------------
   setupPinnedCallouts() {
     this.callouts = {};
-    this.showCallouts = true;
+    this.showCallouts = false;
 
     this.leaderCanvas = document.getElementById('leader-line-canvas');
     this.leaderCtx = this.leaderCanvas ? this.leaderCanvas.getContext('2d') : null;
     if (this.leaderCanvas) {
-      this.leaderCanvas.width = this.canvas.clientWidth || 900;
-      this.leaderCanvas.height = this.canvas.clientHeight || 550;
+      this.leaderCanvas.width = this.canvas.parentElement.clientWidth || 900;
+      this.leaderCanvas.height = this.canvas.parentElement.clientHeight || 550;
     }
 
     const define = (id, title, lines, color, anchor, dockSide) => {
@@ -1076,7 +1081,7 @@ class AeroEngine3D {
 
       // Leader line: anchor -> elbow -> top-center of its box
       const elbowY = Math.min(anchorY + 20, dockEdgeY - 14);
-      ctx.strokeStyle = entry.color;
+      ctx.strokeStyle = this.lightTheme ? '#8a998c' : '#65766b';
       ctx.globalAlpha = 0.75;
       ctx.lineWidth = 1.3;
       ctx.beginPath();
@@ -1088,14 +1093,14 @@ class AeroEngine3D {
 
       // Anchor dot
       ctx.globalAlpha = 1.0;
-      ctx.fillStyle = entry.color;
+      ctx.fillStyle = this.lightTheme ? '#466852' : '#9cbca6';
       ctx.beginPath();
       ctx.arc(anchorX, anchorY, 3, 0, Math.PI * 2);
       ctx.fill();
 
       // Docked label box
-      ctx.fillStyle = 'rgba(8, 14, 28, 0.92)';
-      ctx.strokeStyle = entry.color;
+      ctx.fillStyle = this.lightTheme ? '#fcfbf7' : '#252a27';
+      ctx.strokeStyle = this.lightTheme ? '#8a998c' : '#65766b';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.roundRect(boxX, boxY, boxW, boxH, 6);
@@ -1107,12 +1112,12 @@ class AeroEngine3D {
       ctx.rect(boxX, boxY, boxW, boxH);
       ctx.clip();
 
-      ctx.fillStyle = entry.color;
-      ctx.font = 'bold 10px Inter, sans-serif';
+      ctx.fillStyle = this.lightTheme ? '#466852' : '#9cbca6';
+      ctx.font = '500 10px system-ui, sans-serif';
       ctx.fillText(entry.title, boxX + 8, boxY + 14, boxW - 16);
 
-      ctx.fillStyle = '#e6edf3';
-      ctx.font = '8.5px "JetBrains Mono", monospace';
+      ctx.fillStyle = this.lightTheme ? '#566358' : '#b7c0b8';
+      ctx.font = '9px monospace';
       entry.lines.forEach((line, idx) => {
         ctx.fillText(line, boxX + 8, boxY + 26 + idx * 10, boxW - 16);
       });
@@ -1305,6 +1310,12 @@ class AeroEngine3D {
     });
   }
 
+  toggleAnnotations() {
+    this.showCallouts = !this.showCallouts;
+    if (this.leaderCtx) this.leaderCtx.clearRect(0, 0, this.leaderCanvas.width, this.leaderCanvas.height);
+    return this.showCallouts;
+  }
+
   toggleHeatmap(forceState) {
     this.heatmapEnabled = (typeof forceState === 'boolean') ? forceState : !this.heatmapEnabled;
     if (this.thermalUniforms) {
@@ -1392,12 +1403,12 @@ class AeroEngine3D {
   }
 
   onResize() {
-    const width = this.canvas.clientWidth;
-    const height = this.canvas.clientHeight;
+    const width = this.canvas.parentElement.clientWidth;
+    const height = this.canvas.parentElement.clientHeight;
     if (width === 0 || height === 0) return;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(width, height);
+    this.renderer.setSize(width, height, false);
     if (this.composer) this.composer.setSize(width, height);
     if (this.bloomPass) this.bloomPass.resolution.set(width, height);
     if (this.leaderCanvas) {

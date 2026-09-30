@@ -24,19 +24,50 @@ import {
   evaluateAlarm,
 } from './telemetry_store.js';
 
+import { renderAnalysis } from './analysis_panel.js';
+
 document.addEventListener('DOMContentLoaded', () => {
   // -------------------------------------------------------------------------
   // 1. Initialize 3D Digital Twin Engine
   // -------------------------------------------------------------------------
-  const engine3D = new AeroEngine3D('webgl-canvas');
-  window._engine3D = engine3D;
-  window.dispatchEvent(new CustomEvent('engine3dReady', { detail: engine3D }));
+  let engine3D = null;
+  function showViewportError(error) {
+    console.error('[3D viewport]', error);
+    const notice = document.getElementById('viewport-error');
+    if (notice) notice.hidden = false;
+    document.querySelectorAll('.canvas-container button, .canvas-container input').forEach((control) => {
+      control.disabled = true;
+    });
+  }
+  try {
+    engine3D = new AeroEngine3D('webgl-canvas');
+    window._engine3D = engine3D;
+    window.dispatchEvent(new CustomEvent('engine3dReady', { detail: engine3D }));
+  } catch (error) {
+    showViewportError(error);
+  }
+  function updateEngine(method, ...args) {
+    if (!engine3D) return;
+    try { return engine3D[method](...args); }
+    catch (error) { showViewportError(error); engine3D = null; }
+  }
+  renderAnalysis();
+  let latestFrame = null;
+  let lastPacketAt = 0;
+  let fixedWindowEnd = 0;
+  const analysisStatus = document.getElementById('analysis-status');
+  function updateAnalysisStatus() {
+    if (!analysisStatus) return;
+    const stale = !lastPacketAt || Date.now() - lastPacketAt > 5000;
+    analysisStatus.textContent = conductorMode === 'FIXED' ? 'Replay · historical readings' :
+      stale ? (latestFrame ? 'Connection interrupted · last readings shown' : 'Waiting for telemetry…') : 'Live · updating from simulator';
+    analysisStatus.dataset.tone = stale && conductorMode === 'LIVE' ? 'warn' : 'neutral';
+  }
 
   // -------------------------------------------------------------------------
   // 2. Mission Elapsed Time & Clock
   // -------------------------------------------------------------------------
-  let missionSeconds = 2535; // Default: T+00:42:15
-  let lastTimestampSec = 0;
+  let missionSeconds = 0; // Elapsed time for this telemetry session.
   const missionClockEl = document.getElementById('mission-t-clock');
 
   function formatTime(totalSec) {
@@ -345,7 +376,7 @@ document.addEventListener('DOMContentLoaded', () => {
     stripCtx.clearRect(0, 0, w, h);
 
     // Dark slate background
-    stripCtx.fillStyle = '#07090e';
+    stripCtx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-secondary').trim();
     stripCtx.fillRect(0, 0, w, h);
 
     const now = targetTime !== null ? targetTime : telemetryStore.currentMissionTime;
@@ -354,7 +385,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const tEnd = now;
 
     // Draw vertical time grid lines (every 30 seconds)
-    stripCtx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+    stripCtx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--border-card').trim();
     stripCtx.lineWidth = 1;
     stripCtx.fillStyle = '#485464';
     stripCtx.font = '16px JetBrains Mono, monospace';
@@ -378,7 +409,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Track separator line
       if (idx > 0) {
-        stripCtx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+        stripCtx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--border-card').trim();
         stripCtx.beginPath();
         stripCtx.moveTo(0, topY);
         stripCtx.lineTo(w, topY);
@@ -428,10 +459,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Update legend readout values
-    const latestCht = telemetryStore.getChannel('cht').latest();
-    const latestEgt = telemetryStore.getChannel('egt').latest();
-    const latestVib = telemetryStore.getChannel('vibration_rms').latest();
-    const latestOil = telemetryStore.getChannel('oil_pressure').latest();
+    const latestCht = telemetryStore.getChannel('cht').valueAt(now);
+    const latestEgt = telemetryStore.getChannel('egt').valueAt(now);
+    const latestVib = telemetryStore.getChannel('vibration_rms').valueAt(now);
+    const latestOil = telemetryStore.getChannel('oil_pressure').valueAt(now);
 
     if (stripValCht && Number.isFinite(latestCht)) stripValCht.textContent = `${latestCht.toFixed(1)} °C`;
     if (stripValEgt && Number.isFinite(latestEgt)) stripValEgt.textContent = `${latestEgt.toFixed(1)} °C`;
@@ -465,7 +496,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let conductorPlayInterval = null;
 
   function setConductorMode(mode) {
+    if (mode === 'FIXED' && conductorMode === 'LIVE') fixedWindowEnd = missionSeconds;
     conductorMode = mode;
+    updateAnalysisStatus();
 
     if (mode === 'LIVE') {
       if (btnConductorMode) {
@@ -489,7 +522,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       clearInterval(conductorPlayInterval);
       isConductorPlaying = false;
+      if (latestFrame) renderAnalysis(latestFrame);
     } else {
+      if (btnConductorPlayPause) btnConductorPlayPause.textContent = isConductorPlaying ? '⏸ PAUSE' : '▶ PLAY';
       if (btnConductorMode) {
         btnConductorMode.textContent = 'FIXED (REWOUND)';
         btnConductorMode.className = 'conductor-mode-pill mode-fixed';
@@ -512,7 +547,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // sliderVal is 0 to 1200 (1200 = now, 0 = now - 120s)
     const secOffset = (1200 - sliderVal) * 0.1;
-    const targetTime = Math.max(0, missionSeconds - secOffset);
+    const targetTime = Math.max(0, fixedWindowEnd - secOffset);
 
     if (conductorTimeCurrent) {
       conductorTimeCurrent.textContent = `FIXED (T+${formatTime(targetTime)} / -${secOffset.toFixed(1)}s)`;
@@ -522,7 +557,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const frame = telemetryStore.getHistoricalFrame(targetTime);
     if (frame) {
       // Rewind 3D twin mesh, thermal heatmap & physical sensor nodes
-      engine3D.applyHistoricalFrame(frame);
+      updateEngine('applyHistoricalFrame', frame);
 
       // Rewind Parameter Rail
       updateParameterRail(frame.telemetry);
@@ -533,7 +568,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // Rewind RUL Card
-      updateRulDisplay(frame.adjusted_rul, 0, frame.is_physically_valid);
+      renderAnalysis(frame);
     }
 
     // Render strip chart centered on historical scrub time
@@ -598,8 +633,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (cur >= 1200) {
               setConductorMode('LIVE');
             } else {
-              conductorTimeline.value = cur + 10;
-              applyConductorScrub(cur + 10);
+              conductorTimeline.value = cur + 1;
+              applyConductorScrub(cur + 1);
             }
           }, 100);
         } else {
@@ -624,7 +659,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!chkEl || !slideEl) return;
     const enabled = chkEl.checked;
     const val = parseFloat(slideEl.value);
-    engine3D.setClippingPlane(axis, enabled, val);
+    updateEngine('setClippingPlane', axis, enabled, val);
   }
 
   if (clipChkX && clipSlideX) {
@@ -654,20 +689,28 @@ document.addEventListener('DOMContentLoaded', () => {
     explodedSlider.addEventListener('input', (e) => {
       const val = parseFloat(e.target.value);
       explodedVal.textContent = `${Math.round(val)}%`;
-      engine3D.setExplodedView(val);
+      updateEngine('setExplodedView', val);
     });
   }
 
   if (btnHeatmap) {
     btnHeatmap.addEventListener('click', () => {
-      const active = engine3D.toggleHeatmap();
-      btnHeatmap.classList.toggle('active', active);
+      const active = updateEngine('toggleHeatmap');
+      btnHeatmap.classList.toggle('active', !!active);
+      btnHeatmap.setAttribute('aria-pressed', String(!!active));
     });
   }
 
-  if (btnZoomIn) btnZoomIn.addEventListener('click', () => engine3D.zoomIn(0.25));
-  if (btnZoomOut) btnZoomOut.addEventListener('click', () => engine3D.zoomOut(0.25));
-  if (btnResetView) btnResetView.addEventListener('click', () => engine3D.resetView());
+  const annotationsBtn = document.getElementById('btn-annotations');
+  annotationsBtn?.addEventListener('click', () => {
+    const active = updateEngine('toggleAnnotations');
+    annotationsBtn.classList.toggle('active', !!active);
+    annotationsBtn.setAttribute('aria-pressed', String(!!active));
+  });
+
+  if (btnZoomIn) btnZoomIn.addEventListener('click', () => updateEngine('zoomIn', 0.25));
+  if (btnZoomOut) btnZoomOut.addEventListener('click', () => updateEngine('zoomOut', 0.25));
+  if (btnResetView) btnResetView.addEventListener('click', () => updateEngine('resetView'));
 
   const viewBtns = document.querySelectorAll('.vm-btn, .mvm-btn');
   viewBtns.forEach((btn) => {
@@ -676,7 +719,7 @@ document.addEventListener('DOMContentLoaded', () => {
       viewBtns.forEach((b) => {
         b.classList.toggle('active', b.getAttribute('data-view') === mode);
       });
-      engine3D.setViewMode(mode);
+      updateEngine('setViewMode', mode);
     });
   });
 
@@ -754,114 +797,37 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // 11. Remaining Useful Life (RUL) & PINN Compliance Display
-  // -------------------------------------------------------------------------
-  const rulNumber = document.getElementById('rul-number');
-  const rulExtension = document.getElementById('rul-extension');
-  const rulTimeVal = document.getElementById('rul-time-val');
-  const rulTimeExt = document.getElementById('rul-time-ext');
-  const rulStatusBadge = document.getElementById('rul-status-badge');
-  const rulHeroCard = document.getElementById('rul-hero-card');
-  const fourierResidual = document.getElementById('fourier-residual');
-  const physicalGradient = document.getElementById('physical-gradient');
-  const fourierAdherence = document.getElementById('fourier-adherence');
+  const dataIntegrityStatus = document.getElementById('data-integrity-status');
 
-  function updateRulDisplay(rulCycles, extensionCycles = 0, isPhysicallyValid = true, sustainStr = null, missionStatus = null) {
-    const rawCycles = rulCycles !== undefined && !isNaN(rulCycles) ? rulCycles : 485.0;
-    const cycles = Math.round(rawCycles);
-    const ext = extensionCycles !== undefined && !isNaN(extensionCycles) ? extensionCycles : 0.0;
-
-    if (rulNumber) rulNumber.textContent = cycles;
-
-    let flightHours = rawCycles * 0.1;
-    let timeStr = sustainStr;
-    if (!timeStr) {
-      const hrs = Math.floor(flightHours);
-      const mins = Math.round((flightHours - hrs) * 60);
-      const paddedMins = mins.toString().padStart(2, '0');
-      if (cycles <= 35) {
-        timeStr = `⚠️ ${hrs}h ${paddedMins}m EMERGENCY RTB`;
-      } else {
-        timeStr = `${hrs}h ${paddedMins}m Mission Endurance`;
-      }
+  async function responseJson(response) {
+    if (response.status === 401) {
+      window.location.href = '/login';
+      throw new Error('Session expired. Please sign in again.');
     }
-
-    const extHours = ext * 0.1;
-    const extHrs = Math.floor(extHours);
-    const extMins = Math.round((extHours - extHrs) * 60);
-    const extTimeStr = ext > 1.0 ? `(+${extHrs > 0 ? extHrs + 'h ' : ''}${extMins}m Saved)` : '';
-
-    if (rulExtension) {
-      rulExtension.textContent = ext > 1.0 ? `+${ext.toFixed(1)} cyc (DRL Protected)` : `Nominal Cruise`;
-    }
-    if (rulTimeExt) {
-      rulTimeExt.textContent = extTimeStr;
-      rulTimeExt.style.display = ext > 1.0 ? 'inline' : 'none';
-    }
-
-    let statusClass = 'status-ok';
-    let badgeText = '🟢 OPTIMAL';
-    let cardClass = '';
-    let timeValClass = '';
-
-    if (missionStatus === 'CRITICAL_RTB' || cycles <= 35 || (isPhysicallyValid === false && cycles <= 60)) {
-      statusClass = 'status-crit';
-      badgeText = '🔴 CRITICAL RTB';
-      cardClass = 'critical';
-      timeValClass = 'critical';
-      if (!timeStr.includes('⚠️')) {
-        timeStr = `⚠️ ${timeStr.replace('Mission Endurance', 'EMERGENCY RTB WINDOW')}`;
-      }
-    } else if (missionStatus === 'ELEVATED_WEAR' || cycles <= 180) {
-      statusClass = 'status-warn';
-      badgeText = '🟡 ELEVATED WEAR';
-      cardClass = 'warning';
-      timeValClass = 'warning';
-    }
-
-    if (rulTimeVal) {
-      rulTimeVal.textContent = timeStr;
-      rulTimeVal.className = 'rul-time-val ' + timeValClass;
-    }
-    if (rulStatusBadge) {
-      rulStatusBadge.className = 'rul-status-pill ' + statusClass;
-      rulStatusBadge.textContent = badgeText;
-    }
-    if (rulHeroCard) {
-      rulHeroCard.className = 'rul-hero-card ' + cardClass;
-    }
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${response.status}). Please try again.`);
+    return data;
   }
 
-  // -------------------------------------------------------------------------
-  // 12. Fault Classifier & DRL Displays
-  // -------------------------------------------------------------------------
-  const faultName = document.getElementById('fault-name');
-  const faultConf = document.getElementById('fault-conf');
-  const drlText = document.getElementById('drl-text');
-  const drlShieldBadge = document.getElementById('drl-shield-badge');
-  const dataIntegrityStatus = document.getElementById('data-integrity-status');
-  const defenseAgreementEl = document.getElementById('defense-agreement');
-  const defenseActionModeEl = document.getElementById('defense-action-mode');
-  const defenseIntegrityEl = document.getElementById('defense-integrity');
-  const defenseTrendRiskEl = document.getElementById('defense-trend-risk');
-
-  // Setup Fault Injection Buttons
   const injectBtns = document.querySelectorAll('.inject-btn');
+  const injectionStatus = document.getElementById('injection-status');
   injectBtns.forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const faultType = btn.getAttribute('data-fault');
-      injectBtns.forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-
+      injectBtns.forEach((button) => { button.disabled = true; });
+      if (injectionStatus) injectionStatus.textContent = 'Applying scenario…';
       try {
-        await fetch('/api/simulate/inject', {
+        await responseJson(await fetch('/api/simulate/inject', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fault_type: faultType || null }),
-        });
-      } catch (err) {
-        console.error('Fault injection error:', err);
+          body: JSON.stringify({ fault_type: btn.getAttribute('data-fault') || null }),
+          signal: AbortSignal.timeout(15000),
+        }));
+        injectBtns.forEach((button) => button.classList.toggle('active', button === btn));
+        if (injectionStatus) injectionStatus.textContent = `${btn.textContent.trim()} applied`;
+      } catch (error) {
+        if (injectionStatus) injectionStatus.textContent = error.message;
+      } finally {
+        injectBtns.forEach((button) => { button.disabled = false; });
       }
     });
   });
@@ -886,7 +852,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
     allDiagBtns.forEach((b) => { if (b) b.disabled = true; });
     const originalText = btn ? btn.textContent : null;
-    if (btn) btn.textContent = '⏳ RUNNING…';
+    if (btn) btn.textContent = 'Running…';
 
     try {
       const res = await fetch('/api/agent/diagnose', {
@@ -894,15 +860,16 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ intent }),
+        signal: AbortSignal.timeout(20000),
       });
       if (res.status === 401) { window.location.href = '/login'; return; }
-      const data = await res.json();
+      const data = await responseJson(res);
       const report = data.report || {};
       const gate = report.gate || {};
 
       diagResultEl.style.display = 'block';
-      diagBranchEl.textContent = report.branch || intent;
-      diagSummaryEl.textContent = `RESULT: ${String(report.summary || '—').toUpperCase()}`;
+      diagBranchEl.textContent = (report.branch || intent).replace(/_/g, ' ');
+      diagSummaryEl.textContent = report.summary || 'No diagnostic summary returned.';
       diagGateEl.textContent = gate.verdict ? `GATE: ${gate.verdict} → ${gate.action}` : '';
       diagGateEl.style.color = gate.verdict && gate.verdict.includes('EXCEED') || gate.verdict === 'HALLUCINATION_FLAGGED'
         ? '#f85149' : '#3fb950';
@@ -914,7 +881,7 @@ document.addEventListener('DOMContentLoaded', () => {
       console.error('[AI Diagnostic Router] request failed', err);
       diagResultEl.style.display = 'block';
       diagBranchEl.textContent = 'ERROR';
-      diagSummaryEl.textContent = 'Diagnostic request failed — check connection.';
+      diagSummaryEl.textContent = err.message || 'Diagnostic request failed. Check your connection.';
       diagGateEl.textContent = '';
       diagHashEl.textContent = '';
     } finally {
@@ -952,7 +919,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/agent/advise/status', { credentials: 'include' });
       if (!res.ok) { if (advisorPanel) advisorPanel.style.display = 'none'; return; }
-      const data = await res.json();
+      const data = await responseJson(res);
       if (data.configured === false) {
         if (advisorPanel) advisorPanel.style.display = 'none';
         return;
@@ -971,10 +938,10 @@ document.addEventListener('DOMContentLoaded', () => {
     advisorBtn.addEventListener('click', async () => {
       advisorBtn.disabled = true;
       const originalText = advisorBtn.textContent;
-      advisorBtn.textContent = '⏳ THINKING…';
+      advisorBtn.textContent = 'Reviewing…';
 
       try {
-        const res = await fetch('/api/agent/advise', { method: 'POST', credentials: 'include' });
+        const res = await fetch('/api/agent/advise', { method: 'POST', credentials: 'include', signal: AbortSignal.timeout(45000) });
         if (res.status === 401) { window.location.href = '/login'; return; }
         if (res.status === 429) {
           const err = await res.json().catch(() => ({}));
@@ -985,7 +952,7 @@ document.addEventListener('DOMContentLoaded', () => {
           advisorHashEl.textContent = '';
           return;
         }
-        const data = await res.json();
+        const data = await responseJson(res);
         advisorResultEl.style.display = 'block';
         advisorSynthesisEl.textContent = data.synthesis || '—';
         advisorRecommendationEl.textContent = data.recommended_intent && data.recommended_intent !== 'none'
@@ -1004,7 +971,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (err) {
         console.error('[AI Advisor] request failed', err);
         advisorResultEl.style.display = 'block';
-        advisorSynthesisEl.textContent = 'Advisor request failed — check connection.';
+        advisorSynthesisEl.textContent = err.message || 'Advisor request failed. Check your connection.';
       } finally {
         advisorBtn.textContent = originalText;
         refreshAdvisorQuota();
@@ -1025,24 +992,39 @@ document.addEventListener('DOMContentLoaded', () => {
       modalBackdrop.classList.add('open');
       try {
         const res = await fetch('/api/benchmarks');
-        const data = await res.json();
-        if (benchmarkTbody && data.metrics) {
-          benchmarkTbody.innerHTML = data.metrics
-            .map(
-              (m) => `
-            <tr>
-              <td><strong>${m.metric}</strong></td>
-              <td>${m.traditional_dl}</td>
-              <td>${m.modular_dt}</td>
-              <td class="highlight-col">${m.agentic_pinn_drl}</td>
-              <td><span class="gain-badge">${m.improvement}</span></td>
-            </tr>
-          `
-            )
-            .join('');
+        const data = await responseJson(res);
+        if (benchmarkTbody) {
+          benchmarkTbody.replaceChildren();
+          if (!Array.isArray(data.metrics) || data.metrics.length === 0) {
+            const cell = benchmarkTbody.insertRow().insertCell();
+            cell.colSpan = 5;
+            cell.textContent = 'No benchmark results are available yet.';
+          }
+          for (const metric of data.metrics || []) {
+            const row = benchmarkTbody.insertRow();
+            const reduction = metric.mae_reduction_vs_baseline_pct;
+            const notes = [metric.note || metric.description, reduction && reduction !== 'pending' ? `MAE reduction vs. baseline: ${reduction}` : ''].filter(Boolean).join(' ');
+            const values = [
+              metric.metric,
+              metric.cnn_pca_baseline ?? metric.traditional_dl ?? '—',
+              metric.cnn_raw_ablation ?? '—',
+              metric.pinn_physics_informed ?? metric.pinn_drl_stack ?? metric.value ?? '—',
+              notes || '—',
+            ];
+            values.forEach((value, index) => {
+              const cell = row.insertCell();
+              cell.textContent = String(value ?? '—');
+              if (index === 3) cell.className = 'highlight-col';
+            });
+          }
         }
       } catch (e) {
-        console.error(e);
+        if (benchmarkTbody) {
+          benchmarkTbody.replaceChildren();
+          const cell = benchmarkTbody.insertRow().insertCell();
+          cell.colSpan = 5;
+          cell.textContent = e.message || 'Unable to load benchmarks.';
+        }
       }
     });
 
@@ -1120,22 +1102,23 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateTheme(isLight) {
     if (isLight) {
       document.body.classList.add('light-theme');
-      if (themeIcon) themeIcon.textContent = '🌙';
-      if (themeText) themeText.textContent = 'NIGHT MODE';
-      if (window._engine3D) window._engine3D.setTheme('day');
-      localStorage.setItem('tapas_theme', 'light');
+      if (themeIcon) themeIcon.textContent = '◐';
+      if (themeText) themeText.textContent = 'Dark view';
+      updateEngine('setTheme', 'day');
+      try { localStorage.setItem('tapas_theme', 'light'); } catch {}
     } else {
       document.body.classList.remove('light-theme');
-      if (themeIcon) themeIcon.textContent = '☀️';
-      if (themeText) themeText.textContent = 'DAY MODE';
-      if (window._engine3D) window._engine3D.setTheme('night');
-      localStorage.setItem('tapas_theme', 'dark');
+      if (themeIcon) themeIcon.textContent = '◑';
+      if (themeText) themeText.textContent = 'Light view';
+      updateEngine('setTheme', 'night');
+      try { localStorage.setItem('tapas_theme', 'dark'); } catch {}
     }
   }
 
   if (btnThemeToggle) {
-    const savedTheme = localStorage.getItem('tapas_theme') || 'dark';
-    if (savedTheme === 'light') updateTheme(true);
+    let savedTheme = 'light';
+    try { savedTheme = localStorage.getItem('tapas_theme') || 'light'; } catch {}
+    updateTheme(savedTheme === 'light');
 
     btnThemeToggle.addEventListener('click', () => {
       const isLight = document.body.classList.contains('light-theme');
@@ -1156,7 +1139,7 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.onopen = () => {
       console.log('[Telemetry WS] Connected to 10 Hz telemetry stream');
       if (wsStatus) {
-        wsStatus.textContent = '10 Hz SYNCED';
+        wsStatus.textContent = 'Connected';
         wsStatus.style.color = 'var(--accent-emerald)';
       }
     };
@@ -1164,6 +1147,9 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        latestFrame = data;
+        lastPacketAt = Date.now();
+        updateAnalysisStatus();
 
         // Compute simulated mission elapsed time
         missionSeconds += 0.1;
@@ -1182,90 +1168,25 @@ document.addEventListener('DOMContentLoaded', () => {
         if (dataIntegrityStatus) {
           if (imputedList.length > 0) {
             dataIntegrityStatus.textContent = `${imputedList.length} IMPUTED`;
-            dataIntegrityStatus.style.color = '#38bdf8';
+            dataIntegrityStatus.style.color = 'var(--accent-amber)';
           } else {
-            dataIntegrityStatus.textContent = '100% (AUDITED)';
-            dataIntegrityStatus.style.color = '#3fb950';
+            dataIntegrityStatus.textContent = data.sensor_audit?.passed === true ? 'Audit passed' : 'Not verified';
+            dataIntegrityStatus.style.color = data.sensor_audit?.passed === true ? 'var(--accent-emerald)' : 'var(--text-muted)';
           }
         }
 
         // If in LIVE mode, immediately drive all operational widgets
         if (conductorMode === 'LIVE') {
           // 1. Update 3D twin mesh, thermal heatmap & sensor nodes
-          engine3D.updateTelemetryState(data);
+          updateEngine('updateTelemetryState', data);
           if (window._engine3DExtension) {
-            window._engine3DExtension.onPayload(data);
+            try { window._engine3DExtension.onPayload(data); } catch (error) { console.error('[3D extension]', error); }
           }
 
           // 2. Update Monitored Parameter Rail with tabular values, trends, & sparklines
           updateParameterRail(tel, imputedList);
 
-          // 3. Update PINN Residuals & Adherence
-          if (data.fourier_residual !== undefined && fourierResidual) {
-            fourierResidual.textContent = `${data.fourier_residual.toFixed(3)} °C`;
-          }
-          if (data.physical_gradient !== undefined && physicalGradient) {
-            physicalGradient.textContent = `${data.physical_gradient.toFixed(3)} °C/cyc`;
-          }
-          if (fourierAdherence) {
-            fourierAdherence.textContent = data.is_physically_valid ? '100% COMPLIANT' : 'BOUNDARY DRIFT';
-            fourierAdherence.style.color = data.is_physically_valid ? 'var(--accent-emerald)' : 'var(--accent-rose)';
-          }
-
-          // 4. Update RUL Prognostic Card
-          updateRulDisplay(
-            data.adjusted_rul !== undefined ? data.adjusted_rul : data.rul_cycles,
-            data.extension_cycles,
-            data.is_physically_valid,
-            data.sustain_flight_str,
-            data.mission_status
-          );
-
-          // 5. Update Fault Archetype Classifier
-          if (data.fault_archetype && faultName) {
-            faultName.textContent = data.fault_archetype.toUpperCase().replace('_', ' ');
-            if (faultConf) faultConf.textContent = `${Math.round((data.fault_confidence || 0.85) * 100)}% CONF`;
-
-            if (data.fault_probabilities) {
-              for (const [arch, prob] of Object.entries(data.fault_probabilities)) {
-                const bar = document.getElementById(`fault-bar-${arch}`);
-                const pct = document.getElementById(`fault-pct-${arch}`);
-                if (bar) bar.style.width = `${Math.round(prob * 100)}%`;
-                if (pct) pct.textContent = `${Math.round(prob * 100)}%`;
-              }
-            }
-          }
-
-          // 6. Update DRL Prognostic Actions
-          if (data.drl_action && drlText) {
-            drlText.textContent = data.drl_action.recommendation || 'Nominal cruise envelope';
-            if (drlShieldBadge) {
-              drlShieldBadge.style.display = data.drl_action.shield_applied ? 'inline-flex' : 'none';
-            }
-          }
-
-          // 6b. Defense-grade layered architecture status (Layers 1-5)
-          if (defenseAgreementEl) {
-            const agree = data.fault_agreement_score !== undefined ? data.fault_agreement_score : 1.0;
-            const ensembleN = data.fault_ensemble_size || 0;
-            defenseAgreementEl.textContent = `${Math.round(agree * 100)}% (${ensembleN}-model)`;
-          }
-          if (defenseActionModeEl && data.drl_action) {
-            const mode = data.drl_action.action_mode || 'AUTONOMOUS_ACTION';
-            const safeMode = mode !== 'AUTONOMOUS_ACTION';
-            defenseActionModeEl.textContent = safeMode ? 'SAFE MODE' : 'AUTONOMOUS';
-            defenseActionModeEl.style.color = safeMode ? '#f85149' : '#3fb950';
-          }
-          if (defenseIntegrityEl) {
-            const verified = data.integrity ? data.integrity.verified : true;
-            defenseIntegrityEl.textContent = verified ? 'HMAC OK' : 'FAILED';
-            defenseIntegrityEl.style.color = verified ? '#3fb950' : '#f85149';
-          }
-          if (defenseTrendRiskEl) {
-            const risk = data.trend_risk_score !== undefined ? data.trend_risk_score : 0;
-            defenseTrendRiskEl.textContent = `${Math.round(risk * 100)}%`;
-            defenseTrendRiskEl.style.color = risk >= 0.66 ? '#f85149' : (risk >= 0.34 ? '#d29922' : '#c8d1dc');
-          }
+          renderAnalysis(data);
 
           // 7. Update Subassembly Health Matrix
           if (data.component_health) {
@@ -1289,6 +1210,8 @@ document.addEventListener('DOMContentLoaded', () => {
         window.location.href = '/login';
         return;
       }
+      lastPacketAt = 0;
+      updateAnalysisStatus();
       console.log('[Telemetry WS] Connection lost, reconnecting in 2s...');
       if (wsStatus) {
         wsStatus.textContent = 'DISCONNECTED';
@@ -1303,5 +1226,12 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
+  updateAnalysisStatus();
+  setInterval(updateAnalysisStatus, 1000);
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (modalBackdrop?.classList.contains('open')) { modalBackdrop.classList.remove('open'); btnBenchmarks?.focus(); }
+    if (modalArchitecture?.classList.contains('open')) { modalArchitecture.classList.remove('open'); btnArchitecture?.focus(); }
+  });
   connectWebSocket();
 });

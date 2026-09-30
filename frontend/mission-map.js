@@ -1,349 +1,244 @@
-// PRAHARI Mission Map — 2D SVG rendering, trajectory animation, click
-// interaction, and the "Simulate Attack" tie-in to the real fault-injection
-// pipeline already built for the Live Ops Console.
-
+// Route replay is deliberately separate from the shared engine simulation.
 (function () {
-  const SVG_NS = 'http://www.w3.org/2000/svg';
+  'use strict';
   const { DRDO_STATIONS, COMM_STATIONS, TRAJECTORY, ATTACK_TYPES } = window.MISSION_MAP_DATA;
-
-  let PROJECTION = null; // loaded from india_outline.json — must match scripts/build_india_map.py
-
-  const svg = document.getElementById('map-svg');
-  const detailCard = document.getElementById('detail-card');
-  const threatBanner = document.getElementById('threat-banner');
-  const threatBannerText = document.getElementById('threat-banner-text');
-  const missionClockEl = document.getElementById('mission-clock');
-  const attackListEl = document.getElementById('attack-type-list');
-  const clearBtn = document.getElementById('btn-clear-attack');
-
-  function project(lng, lat) {
-    const b = PROJECTION.projection_bounds;
-    const x = (lng - b.lng_min) / (b.lng_max - b.lng_min) * b.view_w;
-    const y = (1 - (lat - b.lat_min) / (b.lat_max - b.lat_min)) * b.view_h;
-    return [x, y];
+  const $ = (id) => document.getElementById(id);
+  const svg = $('map-svg');
+  const NS = 'http://www.w3.org/2000/svg';
+  const DURATION = 120;
+  let projection, aircraft, flownPath, profileDot, profileGuide;
+  let progress = 0, playing = !window.matchMedia('(prefers-reduced-motion: reduce)').matches, speed = 1, previousFrame = null;
+  let lastUiFrame = 0;
+  const layerGroups = {};
+  const radians = (n) => n * Math.PI / 180;
+  function distance(a, b) {
+    const dlat = radians(b.lat - a.lat), dlng = radians(b.lng - a.lng);
+    const h = Math.sin(dlat / 2) ** 2 + Math.cos(radians(a.lat)) * Math.cos(radians(b.lat)) * Math.sin(dlng / 2) ** 2;
+    return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
   }
-
-  function el(tag, attrs) {
-    const e = document.createElementNS(SVG_NS, tag);
-    for (const k in attrs) e.setAttribute(k, attrs[k]);
+  const cumulative = [0];
+  for (let i = 1; i < TRAJECTORY.length; i++) cumulative.push(cumulative[i - 1] + distance(TRAJECTORY[i - 1], TRAJECTORY[i]));
+  const totalKm = cumulative[cumulative.length - 1];
+  function node(tag, attrs = {}, parent = svg) {
+    const e = document.createElementNS(NS, tag);
+    Object.entries(attrs).forEach(([key, value]) => e.setAttribute(key, value));
+    if (parent) parent.appendChild(e);
     return e;
   }
-
-  function showDetail(title, lines, color) {
-    detailCard.innerHTML = `<div class="dc-title" style="color:${color || 'var(--text-primary)'}">${title}</div>` +
-      lines.map(l => `<div>${l}</div>`).join('');
+  function text(id, value) { if ($(id)) $(id).textContent = value; }
+  function project(lng, lat) {
+    const b = projection.projection_bounds;
+    return [(lng - b.lng_min) / (b.lng_max - b.lng_min) * b.view_w, (1 - (lat - b.lat_min) / (b.lat_max - b.lat_min)) * b.view_h];
   }
-
-  function renderOutline() {
-    const path = el('path', {
-      d: PROJECTION.path,
-      fill: 'rgba(19,32,51,0.85)',
-      stroke: '#38bdf8',
-      'stroke-width': '1.4',
-      'stroke-opacity': '0.7',
-    });
-    svg.appendChild(path);
-
-    // Subtle glow filter for the outline stroke
-    const defs = el('defs', {});
-    defs.innerHTML = `<filter id="glow"><feGaussianBlur stdDeviation="1.5" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
-    svg.insertBefore(defs, svg.firstChild);
-    path.setAttribute('filter', 'url(#glow)');
+  function phase(i) { return ['Climb', 'Cruise', 'Cruise', 'Cruise', 'Descent', 'Descent', 'Approach'][i] || 'Recovery'; }
+  function shortName(wp) { return wp.label.replace(/^WP-\d+\s*·\s*/, '').replace(/\s*\(.*\)$/, ''); }
+  function interpolate(t) {
+    const target = t * totalKm;
+    let segIndex = 0;
+    while (segIndex < TRAJECTORY.length - 2 && target >= cumulative[segIndex + 1]) segIndex++;
+    const segFrac = Math.max(0, Math.min(1, (target - cumulative[segIndex]) / (cumulative[segIndex + 1] - cumulative[segIndex])));
+    const a = TRAJECTORY[segIndex], b = TRAJECTORY[segIndex + 1];
+    const heading = (Math.atan2(Math.sin(radians(b.lng - a.lng)) * Math.cos(radians(b.lat)), Math.cos(radians(a.lat)) * Math.sin(radians(b.lat)) - Math.sin(radians(a.lat)) * Math.cos(radians(b.lat)) * Math.cos(radians(b.lng - a.lng))) * 180 / Math.PI + 360) % 360;
+    return { t, segIndex, segFrac, lat: a.lat + (b.lat - a.lat) * segFrac, lng: a.lng + (b.lng - a.lng) * segFrac, alt_ft: a.alt_ft + (b.alt_ft - a.alt_ft) * segFrac, heading, playing, speed, elapsedSeconds: t * DURATION, distanceKm: target, totalKm };
   }
-
-  function renderTrajectoryPath() {
-    const pts = TRAJECTORY.map(wp => project(wp.lng, wp.lat));
-    const d = 'M' + pts.map(p => p.join(',')).join(' L');
-
-    // Wide soft glow pass underneath, then the crisp dashed line on top —
-    // makes the route read clearly as a flight path against the dark map
-    // instead of a thin scribble.
-    const glowLine = el('path', {
-      d, fill: 'none', stroke: '#58a6ff', 'stroke-width': '7',
-      'stroke-opacity': '0.18', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
-    });
-    svg.appendChild(glowLine);
-
-    const line = el('path', {
-      d, fill: 'none', stroke: '#7dd3ff', 'stroke-width': '2.6',
-      'stroke-dasharray': '10 6', 'stroke-opacity': '0.95',
-      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
-    });
-    svg.appendChild(line);
-
-    // Small directional chevrons at the midpoint of each leg so the route
-    // reads as a flown path, not just a connect-the-dots outline.
-    for (let i = 0; i < pts.length - 1; i++) {
-      const [x1, y1] = pts[i];
-      const [x2, y2] = pts[i + 1];
-      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-      const ang = Math.atan2(y2 - y1, x2 - x1);
-      const size = 7;
-      const p1 = [mx - size * Math.cos(ang - 0.4), my - size * Math.sin(ang - 0.4)];
-      const p2 = [mx - size * Math.cos(ang + 0.4), my - size * Math.sin(ang + 0.4)];
-      const chevron = el('path', {
-        d: `M${p1[0]},${p1[1]} L${mx},${my} L${p2[0]},${p2[1]}`,
-        fill: 'none', stroke: '#7dd3ff', 'stroke-width': '2',
-        'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'stroke-opacity': '0.9',
+  window.missionMapClock = interpolate(0);
+  function setPlaying(value) { playing = value; previousFrame = null; text('btn-replay-toggle', playing ? 'Pause' : progress >= 1 ? 'Replay' : 'Play'); $('btn-replay-toggle').setAttribute('aria-label', playing ? 'Pause route replay' : 'Play route replay'); updatePosition(); }
+  function seek(t) { progress = Math.max(0, Math.min(1, Number(t) || 0)); previousFrame = null; if (progress >= 1) playing = false; updatePosition(); }
+  window.missionReplay = { play() { if (progress >= 1) progress = 0; setPlaying(true); }, pause() { setPlaying(false); }, seek, setSpeed(value) { if ([.5, 1, 2, 4].includes(Number(value))) { speed = Number(value); $('replay-speed').value = String(speed); previousFrame = null; updatePosition(); } } };
+  function showDetail(title, lines) {
+    const card = $('detail-card'); card.replaceChildren();
+    const heading = document.createElement('p'); heading.className = 'dc-title'; heading.textContent = title; card.appendChild(heading);
+    lines.forEach((line) => { const p = document.createElement('p'); p.textContent = line; card.appendChild(p); });
+  }
+  function selectWaypoint(i) {
+    const wp = TRAJECTORY[i];
+    showDetail(wp.label, [wp.narrative, `Planned altitude: ${wp.alt_ft.toLocaleString()} ft · Route distance: ${Math.round(cumulative[i]).toLocaleString()} km`, `${wp.lat.toFixed(3)}° N, ${wp.lng.toFixed(3)}° E · Fictional waypoint`]);
+    seek(cumulative[i] / totalKm); setPlaying(false);
+  }
+  function accessibleMarker(group, label, action) {
+    group.setAttribute('class', 'map-marker'); group.setAttribute('role', 'button'); group.setAttribute('tabindex', '0'); group.setAttribute('aria-label', label);
+    group.addEventListener('click', action);
+    group.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); action(); } });
+  }
+  function renderMap() {
+    node('rect', { x: 0, y: 0, width: 1000, height: 1000, fill: '#e5ebe4' });
+    const grid = node('g', { stroke: '#cbd7cc', 'stroke-width': '.7' });
+    for (let lat = 10; lat <= 35; lat += 5) { const [,y] = project(70, lat); node('line', { x1: 0, y1: y, x2: 1000, y2: y }, grid); }
+    for (let lng = 70; lng <= 95; lng += 5) { const [x] = project(lng, 20); node('line', { x1: x, y1: 0, x2: x, y2: 1000 }, grid); }
+    node('path', { d: projection.path, fill: '#f4f3e9', stroke: '#a6b4a4', 'stroke-width': '1.3' });
+    const points = TRAJECTORY.map(wp => project(wp.lng, wp.lat));
+    const routeD = 'M' + points.map(p => p.join(',')).join(' L');
+    node('path', { d: routeD, fill: 'none', stroke: '#fffdf7', 'stroke-width': '6', 'stroke-linejoin': 'round' });
+    node('path', { d: routeD, fill: 'none', stroke: '#9aa99b', 'stroke-width': '2', 'stroke-dasharray': '5 4', 'stroke-linejoin': 'round' });
+    flownPath = node('path', { fill: 'none', stroke: '#496e55', 'stroke-width': '3', 'stroke-linejoin': 'round' });
+    function stations(list, color, key) {
+      const group = node('g', { id: `map-${key}` }); layerGroups[key] = group;
+      list.forEach((s) => {
+        const [x,y] = project(s.lng, s.lat); const g = node('g', {}, group);
+        node('circle', { cx:x, cy:y, r:8, fill:'transparent' }, g);
+        node('rect', { x:x-3, y:y-3, width:6, height:6, rx:1, fill:color, stroke:'#fff', 'stroke-width':1, class:'marker-dot' }, g);
+        const label = node('text', { x:x+6, y:y-6, class:'map-label' }, g); label.textContent = s.city || s.name.replace('Ground Control Station ', 'GCS ');
+        accessibleMarker(g, s.name, () => showDetail(s.name, s.type ? [`${s.city} · ${s.type.replace('_', ' ')}`, 'Public, approximate city location.'] : [s.note, 'Fictional ground station; no connection status is inferred.']));
       });
-      svg.appendChild(chevron);
     }
-  }
-
-  function renderWaypoints() {
+    stations(COMM_STATIONS, '#547b6e', 'stations'); stations(DRDO_STATIONS, '#b38a45', 'labs');
     TRAJECTORY.forEach((wp, i) => {
-      const [x, y] = project(wp.lng, wp.lat);
-      const isThreat = !!wp.isThreatZone;
-      const dot = el('circle', {
-        cx: x, cy: y, r: isThreat ? 7 : 4.5,
-        fill: isThreat ? '#f85149' : '#58a6ff',
-        stroke: '#0a0e14', 'stroke-width': '1.2',
-        style: 'cursor:pointer;',
-      });
-      dot.addEventListener('click', () => {
-        showDetail(wp.label, [wp.narrative, `Altitude: ${wp.alt_ft.toLocaleString()} ft`], isThreat ? '#f85149' : '#58a6ff');
-      });
-      svg.appendChild(dot);
-      if (isThreat) {
-        const ring = el('circle', { cx: x, cy: y, r: 7, fill: 'none', stroke: '#f85149', 'stroke-width': '1.5', opacity: '0.7' });
-        ring.innerHTML = `<animate attributeName="r" values="7;16;7" dur="1.8s" repeatCount="indefinite"/>
-          <animate attributeName="opacity" values="0.7;0;0.7" dur="1.8s" repeatCount="indefinite"/>`;
-        svg.appendChild(ring);
-      }
+      const [x,y] = points[i]; const g = node('g');
+      node('circle', { cx:x, cy:y, r:9, fill:'transparent' }, g);
+      node('circle', { cx:x, cy:y, r:4.5, fill:wp.isThreatZone ? '#b98242' : '#fcfbf7', stroke:wp.isThreatZone ? '#b98242' : '#58715e', 'stroke-width':1.5, class:'marker-dot' }, g);
+      if (i < TRAJECTORY.length - 1) { const label = node('text', { x:x+8, y:y+12, class:'map-label' }, g); label.textContent = i === 0 ? 'Launch / recovery' : `WP ${i} · ${shortName(wp)}`; }
+      accessibleMarker(g, `${wp.label}; inspect and move replay to waypoint`, () => selectWaypoint(i));
+    });
+    aircraft = node('g', { 'aria-hidden':'true' });
+    node('circle', { r:10, fill:'#d2dfd0', opacity:'.8' }, aircraft);
+    node('path', { d:'M0,-8 L5,6 L0,3 L-5,6 Z', fill:'#2c523a', stroke:'#fff', 'stroke-width':1.2 }, aircraft);
+    setExtent(true); applyLayers(); $('map-load-status').hidden = true;
+  }
+  function setExtent(route) {
+    if (!projection) return;
+    if (route) {
+      const pts = [...TRAJECTORY, ...COMM_STATIONS].map(p => project(p.lng, p.lat));
+      const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+      const minX = Math.min(...xs) - 55, minY = Math.min(...ys) - 60, w = Math.max(...xs) - minX + 70, h = Math.max(...ys) - minY + 70;
+      svg.setAttribute('viewBox', `${minX} ${minY} ${w} ${h}`);
+    } else svg.setAttribute('viewBox', '-30 -25 1060 1050');
+    ['route','india'].forEach(key => { const selected = route === (key === 'route'); $(`btn-fit-${key}`).classList.toggle('active', selected); $(`btn-fit-${key}`).setAttribute('aria-pressed', selected); });
+  }
+  function applyLayers() {
+    ['stations', 'labs'].forEach(key => { if (layerGroups[key]) layerGroups[key].style.display = $(`layer-${key}`).checked ? '' : 'none'; });
+    svg.querySelectorAll('.map-label').forEach(label => { label.style.display = $('layer-labels').checked ? '' : 'none'; });
+  }
+  function renderItinerary() {
+    const list = $('waypoint-list');
+    TRAJECTORY.forEach((wp, i) => {
+      const li = document.createElement('li'); const btn = document.createElement('button'); btn.type = 'button'; btn.dataset.waypoint = i;
+      const number = document.createElement('span'); number.className = 'wp-number'; number.textContent = String(i).padStart(2,'0');
+      const name = document.createElement('span'); name.className = 'wp-name'; name.textContent = shortName(wp);
+      const meta = document.createElement('small'); meta.textContent = `${Math.round(cumulative[i]).toLocaleString()} km from launch`; name.appendChild(meta);
+      const alt = document.createElement('span'); alt.className = 'wp-alt'; alt.textContent = `${wp.alt_ft.toLocaleString()} ft`;
+      btn.append(number, name, alt); btn.addEventListener('click', () => selectWaypoint(i)); li.appendChild(btn); list.appendChild(li);
     });
   }
-
-  function renderStations(list, color, radius, labelKey) {
-    list.forEach((s) => {
-      const [x, y] = project(s.lng, s.lat);
-      const g = el('g', { style: 'cursor:pointer;' });
-      const dot = el('circle', { cx: x, cy: y, r: radius, fill: color, stroke: '#0a0e14', 'stroke-width': '1.2' });
-      const label = el('text', {
-        x: x + radius + 4, y: y + 3, fill: 'var(--text-secondary)', 'font-size': '9',
-        'font-family': 'JetBrains Mono, monospace',
-      });
-      label.textContent = s.city || s.name;
-      g.appendChild(dot);
-      g.appendChild(label);
-      g.addEventListener('click', () => {
-        if (s.type) {
-          showDetail(s.name, [`City: ${s.city}`, `Type: ${s.type}`, 'Public, city-level location.'], color);
-        } else {
-          showDetail(s.name, [s.note], color);
-        }
-      });
-      svg.appendChild(g);
+  const profileX = t => 46 + t * 760;
+  const profileY = alt => 128 - alt / 16000 * 110;
+  function renderProfile() {
+    const profile = $('altitude-profile');
+    [0,7000,14000].forEach(alt => {
+      const y = profileY(alt); node('line', { x1:46, y1:y, x2:806, y2:y, stroke:'#dfe2d8', 'stroke-width':1 }, profile);
+      const label = node('text', { x:0, y:y+3, fill:'#707b70', 'font-size':9 }, profile); label.textContent = alt ? `${alt/1000}k ft` : '0 ft';
     });
+    const pts = TRAJECTORY.map((p,i) => [profileX(cumulative[i]/totalKm), profileY(p.alt_ft)]);
+    node('path', { d:`M46,128 L${pts.map(p=>p.join(',')).join(' L')} L806,128 Z`, fill:'#e7ecdf' }, profile);
+    node('path', { d:'M'+pts.map(p=>p.join(',')).join(' L'), fill:'none', stroke:'#58715e', 'stroke-width':2 }, profile);
+    pts.forEach(([x,y],i) => { node('circle', {cx:x,cy:y,r:3,fill:'#fcfbf7',stroke:'#58715e'},profile); const t=node('text',{x,y:149,'text-anchor':'middle','font-size':9,fill:'#707b70'},profile);t.textContent=Math.round(cumulative[i]).toLocaleString(); });
+    profileGuide = node('line', { y1:15,y2:128,stroke:'#496e55','stroke-width':1,'stroke-dasharray':'3 3' },profile);
+    profileDot = node('circle',{r:4,fill:'#365640',stroke:'#fff','stroke-width':2},profile);
   }
-
-  let aircraftMarker = null;
-  function renderAircraftMarker() {
-    aircraftMarker = el('circle', { r: 6, fill: '#3fb950', stroke: '#0a0e14', 'stroke-width': '1.5' });
-    svg.appendChild(aircraftMarker);
-    const halo = el('circle', { r: 10, fill: 'none', stroke: '#3fb950', 'stroke-width': '1', opacity: '0.5' });
-    halo.setAttribute('id', 'aircraft-halo');
-    svg.appendChild(halo);
-  }
-
-  // --- Animation clock: t goes 0 -> 1 across the whole trajectory, looping.
-  // Shared globally (window.missionMapClock) so mission-map-3d.js stays in sync.
-  const CYCLE_SECONDS = 40;
-  let startTime = performance.now();
-  window.missionMapClock = { t: 0, segIndex: 0, segFrac: 0 };
-
-  function interpolateTrajectory(t) {
-    const n = TRAJECTORY.length - 1;
-    const scaled = t * n;
-    const segIndex = Math.min(n - 1, Math.floor(scaled));
-    const segFrac = scaled - segIndex;
-    const a = TRAJECTORY[segIndex];
-    const b = TRAJECTORY[segIndex + 1];
-    return {
-      lat: a.lat + (b.lat - a.lat) * segFrac,
-      lng: a.lng + (b.lng - a.lng) * segFrac,
-      alt_ft: a.alt_ft + (b.alt_ft - a.alt_ft) * segFrac,
-      segIndex, segFrac,
-    };
-  }
-
-  function tick() {
-    const elapsed = (performance.now() - startTime) / 1000;
-    const t = (elapsed % CYCLE_SECONDS) / CYCLE_SECONDS;
-    const pos = interpolateTrajectory(t);
-    window.missionMapClock = { t, ...pos };
-
-    const [x, y] = project(pos.lng, pos.lat);
-    if (aircraftMarker) {
-      aircraftMarker.setAttribute('cx', x);
-      aircraftMarker.setAttribute('cy', y);
-      const halo = document.getElementById('aircraft-halo');
-      if (halo) { halo.setAttribute('cx', x); halo.setAttribute('cy', y); }
+  function timeString(seconds) { const whole = Math.floor(seconds); return `${String(Math.floor(whole/60)).padStart(2,'0')}:${String(whole%60).padStart(2,'0')}`; }
+  function updatePosition() {
+    const pos = interpolate(progress); window.missionMapClock = pos;
+    if (projection && aircraft) {
+      const [x,y] = project(pos.lng,pos.lat); aircraft.setAttribute('transform',`translate(${x} ${y}) rotate(${pos.heading})`);
+      const pts = TRAJECTORY.slice(0,pos.segIndex+1).map(p=>project(p.lng,p.lat)); pts.push([x,y]); flownPath.setAttribute('d','M'+pts.map(p=>p.join(',')).join(' L'));
     }
-
-    const missionSeconds = Math.floor(elapsed);
-    if (missionClockEl) {
-      const m = Math.floor(missionSeconds / 60).toString().padStart(2, '0');
-      const s = (missionSeconds % 60).toString().padStart(2, '0');
-      missionClockEl.textContent = `T+${m}:${s}`;
-    }
-
+    if (profileDot) { const x=profileX(progress), y=profileY(pos.alt_ft); profileDot.setAttribute('cx',x); profileDot.setAttribute('cy',y); profileGuide.setAttribute('x1',x); profileGuide.setAttribute('x2',x); }
+    const altitude = `${Math.round(pos.alt_ft).toLocaleString()} ft`;
+    text('route-total', `${Math.round(totalKm).toLocaleString()} km`); text('route-altitude', altitude); text('altitude-current', altitude);
+    text('route-phase', progress >= 1 ? 'Recovery · Replay complete' : `${phase(pos.segIndex)} · Planned profile`);
+    text('route-covered',`${Math.round(pos.distanceKm).toLocaleString()} km`); text('route-remaining',`${Math.round(totalKm-pos.distanceKm).toLocaleString()} km remaining · ${Math.round(progress*100)}%`);
+    text('route-leg', progress >= 1 ? 'Recovered' : `WP ${pos.segIndex} → ${pos.segIndex+1}`); text('route-next',progress >= 1 ? 'Select Replay to fly again' : shortName(TRAJECTORY[pos.segIndex+1]));
+    text('mission-clock',`${timeString(progress*DURATION)} / ${timeString(DURATION)}`); $('route-scrubber').value=String(Math.round(progress*1000));
+    $('route-scrubber').setAttribute('aria-valuetext',`${Math.round(progress*100)} percent, ${altitude}`);
+    text('btn-replay-toggle',playing ? 'Pause' : progress>=1 ? 'Replay' : 'Play'); $('btn-replay-toggle').setAttribute('aria-label',playing ? 'Pause route replay' : 'Play route replay');
+    const activeIndex=progress>=1 ? TRAJECTORY.length-1 : pos.segIndex;
+    $('waypoint-list').querySelectorAll('button').forEach((btn,i)=>{ if(i===activeIndex)btn.setAttribute('aria-current','step');else btn.removeAttribute('aria-current'); });
+  }
+  function tick(now) {
+    if (previousFrame !== null && playing) { progress=Math.min(1,progress+(now-previousFrame)/1000/DURATION*speed); if(progress>=1)playing=false; }
+    previousFrame=now;
+    window.missionMapClock=interpolate(progress);
+    if(now-lastUiFrame>80) { updatePosition();lastUiFrame=now; }
     requestAnimationFrame(tick);
   }
+  $('btn-replay-toggle').addEventListener('click',()=>playing ? window.missionReplay.pause() : window.missionReplay.play());
+  $('btn-replay-reset').addEventListener('click',()=>{seek(0);setPlaying(false);});
+  $('route-scrubber').addEventListener('input',e=>seek(Number(e.target.value)/1000));
+  $('replay-speed').addEventListener('change',e=>window.missionReplay.setSpeed(e.target.value));
+  $('btn-fit-route').addEventListener('click',()=>setExtent(true)); $('btn-fit-india').addEventListener('click',()=>setExtent(false));
+  ['stations','labs','labels'].forEach(key=>$(`layer-${key}`).addEventListener('change',applyLayers));
+  document.addEventListener('visibilitychange',()=>{previousFrame=null;});
 
-  // --- Threat scenario controls: multiple attack TYPES against the
-  // aircraft's own systems, each a real fault-injection already used by the
-  // Live Ops Console (src/server/server.py). Selecting one has a genuine
-  // effect on the shared live simulation.
-  let activeAttackId = null;
-
-  function renderAttackButtons() {
-    attackListEl.innerHTML = '';
-    ATTACK_TYPES.forEach((atk) => {
-      const btn = document.createElement('button');
-      btn.className = 'btn btn-danger';
-      btn.style.width = '100%';
-      btn.style.textAlign = 'left';
-      btn.dataset.attackId = atk.id;
-      btn.textContent = atk.label;
-      btn.addEventListener('click', () => triggerAttack(atk));
-      attackListEl.appendChild(btn);
-    });
+  // Show only confirmed simulator state; control mode never implies fault clearance.
+  let activeFault = null, knownFault = false, pending = false, lastTelemetryAt = 0, connected = false, latest = null;
+  let feedState = 'connecting';
+  const attackByFault = type => ATTACK_TYPES.find(a=>a.faultType===type);
+  const faultLabels = { nominal:'No fault detected', vibration_over:'Elevated vibration', vibration_spike:'Vibration spike', oil_starvation:'Low oil pressure', oil_leak:'Oil pressure loss', cht_overheat:'Cylinder overheating', egt_surge:'Exhaust temperature surge', thermal_shock:'Thermal stress', sensor_dropout:'Sensor signal loss', sensor_drift:'Sensor drift', sensor_integrity:'Sensor integrity', unknown:'Assessment unavailable' };
+  const readable = value => faultLabels[value] || String(value || '—').replace(/_/g,' ').replace(/^./,c=>c.toUpperCase());
+  const percent = value => typeof value==='number' && Number.isFinite(value) ? `${Math.round(Math.max(0,Math.min(1,value))*100)}%` : '—';
+  function setFeedback(message,error=false) { text('scenario-feedback',message);$('scenario-feedback').classList.toggle('error',error); }
+  function renderScenario() {
+    const fresh = connected && lastTelemetryAt && Date.now()-lastTelemetryAt<8000;
+    $('attack-type-list').querySelectorAll('button').forEach(btn=>{btn.disabled=pending||!fresh; const active=knownFault&&btn.dataset.faultType===activeFault;btn.classList.toggle('active',active);btn.setAttribute('aria-pressed',active);});
+    $('btn-clear-attack').disabled=pending||!fresh||!knownFault||!activeFault;
+    $('threat-banner').hidden=!knownFault||!activeFault;
+    if(activeFault)text('threat-banner-text',`${fresh ? 'Injected fault active' : 'Last known injected fault'}: ${attackByFault(activeFault)?.label||readable(activeFault)}. Clear it explicitly to end the scenario.`);
   }
-
-  async function injectFault(faultType) {
-    try {
-      const res = await fetch('/api/simulate/inject', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ fault_type: faultType }),
-      });
-      if (res.status === 401) {
-        window.location.href = '/login';
-        return false;
-      }
-      return res.ok;
-    } catch (err) {
-      console.error('[MissionMap] fault injection request failed', err);
-      return false;
-    }
+  function renderNarrative(data) {
+    const mode=data.drl_action?.action_mode;
+    let narration=activeFault ? `${attackByFault(activeFault)?.label||readable(activeFault)} remains injected. ` : 'No fault is currently injected. Baseline readings can still indicate wear. ';
+    if(mode==='AUTONOMOUS_ACTION') narration+='The controller permits autonomous adjustment; this does not confirm that a fault has cleared.';
+    else if(mode) narration+='The controller is holding or limiting action. Review the diagnosis in the drone console.';
+    else narration+='Control mode is unavailable in this reading.';
+    text('resp-narrative',narration);
   }
-
-  async function triggerAttack(atk) {
-    activeAttackId = atk.id;
-    Array.from(attackListEl.children).forEach((el) => {
-      el.blur(); // clear any lingering focus ring so only .active reads as "selected"
-      el.classList.toggle('active', el.dataset.attackId === atk.id);
-    });
-    threatBanner.classList.add('active');
-    threatBannerText.textContent = `SIMULATED THREAT ACTIVE — ${atk.label.toUpperCase()}`;
-    showDetail(atk.label, [atk.description], '#f85149');
-    document.getElementById('resp-narrative').textContent =
-      `Threat injected — watching PRAHARI's defense layers detect and mitigate it below.`;
-
-    // Flash the always-visible top strip so the live reaction can't be missed.
-    const strip = document.getElementById('live-monitor-strip');
-    if (strip) {
-      strip.style.borderColor = 'var(--accent-rose)';
-      strip.style.boxShadow = '0 0 0 1px var(--accent-rose)';
-      strip.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      setTimeout(() => { strip.style.borderColor = ''; strip.style.boxShadow = ''; }, 2000);
-    }
-
-    await injectFault(atk.faultType);
+  function setFeedState(state) {
+    feedState=state;
+    const live=state==='live';$('resp-ws-status').classList.toggle('live',live);$('lm-ws-dot').classList.toggle('live',live);
+    text('resp-ws-status',live?'Live':state==='stale'?'Stale':state==='offline'?'Reconnecting':'Connecting');
+    text('lm-ws-label',live?'Receiving telemetry':state==='stale'?'No recent telemetry':state==='offline'?'Connection interrupted':'Waiting for telemetry');
+    if(!live) { text('resp-narrative',latest?'Readings below are the last received values. Fault controls are unavailable until telemetry resumes.':'Waiting for a current engine reading.'); if(!pending)setFeedback('Fault controls become available when fresh telemetry is received.'); }
+    renderScenario();
   }
-
-  clearBtn.addEventListener('click', async () => {
-    activeAttackId = null;
-    Array.from(attackListEl.children).forEach((el) => el.classList.remove('active'));
-    threatBanner.classList.remove('active');
-    document.getElementById('resp-narrative').textContent = 'Select a threat to see PRAHARI detect and mitigate it live.';
-    await injectFault(null);
+  ATTACK_TYPES.forEach(atk=>{
+    const btn=document.createElement('button');btn.type='button';btn.className='btn';btn.dataset.faultType=atk.faultType;btn.textContent=atk.label;btn.title=atk.description;btn.disabled=true;btn.setAttribute('aria-pressed','false');btn.addEventListener('click',()=>changeScenario(atk.faultType));$('attack-type-list').appendChild(btn);
   });
-
-  // --- Live "System Response" panel: a lightweight read-only WS connection
-  // to the same /ws/telemetry stream the Live Ops Console uses, so the
-  // mitigation story (safe-mode gate, ensemble agreement, trend risk) is
-  // real live data, not narrative text.
-  function connectResponseFeed() {
-    const statusEl = document.getElementById('resp-ws-status');
-    const lmDot = document.getElementById('lm-ws-dot');
-    const lmLabel = document.getElementById('lm-ws-label');
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/telemetry`);
-
-    ws.onopen = () => {
-      if (statusEl) { statusEl.textContent = '● LIVE'; statusEl.style.color = 'var(--accent-emerald)'; }
-      if (lmDot) lmDot.classList.add('live');
-      if (lmLabel) lmLabel.textContent = 'LIVE TELEMETRY MONITORING';
-    };
-    ws.onclose = (event) => {
-      if (statusEl) { statusEl.textContent = '○ disconnected'; statusEl.style.color = 'var(--text-muted)'; }
-      if (lmDot) lmDot.classList.remove('live');
-      if (lmLabel) lmLabel.textContent = 'RECONNECTING…';
-      if (event.code === 4401) { window.location.href = '/login'; return; }
-      setTimeout(connectResponseFeed, 2000);
-    };
-    ws.onerror = () => ws.close();
-    ws.onmessage = (event) => {
-      let data;
-      try { data = JSON.parse(event.data); } catch (e) { return; }
-
-      const fault = data.fault_archetype || 'nominal';
-      const actionMode = (data.drl_action && data.drl_action.action_mode) || 'AUTONOMOUS_ACTION';
-      const agreement = data.fault_agreement_score !== undefined ? data.fault_agreement_score : 1.0;
-      const trend = data.trend_risk_score !== undefined ? data.trend_risk_score : 0;
-      const safeMode = actionMode !== 'AUTONOMOUS_ACTION';
-      const faultColor = fault === 'nominal' ? 'var(--text-primary)' : 'var(--accent-rose)';
-      const modeColor = safeMode ? 'var(--accent-rose)' : 'var(--accent-emerald)';
-
-      const faultEl = document.getElementById('resp-fault');
-      const modeEl = document.getElementById('resp-action-mode');
-      const agreeEl = document.getElementById('resp-agreement');
-      const trendEl = document.getElementById('resp-trend');
-      if (faultEl) { faultEl.textContent = fault.toUpperCase(); faultEl.style.color = faultColor; }
-      if (modeEl) { modeEl.textContent = safeMode ? 'SAFE MODE' : 'AUTONOMOUS'; modeEl.style.color = modeColor; }
-      if (agreeEl) agreeEl.textContent = `${Math.round(agreement * 100)}%`;
-      if (trendEl) { trendEl.textContent = `${Math.round(trend * 100)}%`; trendEl.style.color = trend >= 0.5 ? 'var(--accent-amber)' : 'var(--text-primary)'; }
-
-      // Always-visible strip at the top of the page — mirrors the sidebar
-      // panel so the live reaction is impossible to miss without scrolling.
-      const lmFault = document.getElementById('lm-fault');
-      const lmMode = document.getElementById('lm-mode');
-      const lmAgreement = document.getElementById('lm-agreement');
-      const lmTrend = document.getElementById('lm-trend');
-      if (lmFault) { lmFault.textContent = fault.toUpperCase(); lmFault.style.color = faultColor; }
-      if (lmMode) { lmMode.textContent = safeMode ? 'SAFE MODE' : 'AUTONOMOUS'; lmMode.style.color = modeColor; }
-      if (lmAgreement) lmAgreement.textContent = `${Math.round(agreement * 100)}%`;
-      if (lmTrend) { lmTrend.textContent = `${Math.round(trend * 100)}%`; lmTrend.style.color = trend >= 0.5 ? 'var(--accent-amber)' : 'var(--text-primary)'; }
-
-      if (activeAttackId) {
-        const narrativeEl = document.getElementById('resp-narrative');
-        if (narrativeEl) {
-          narrativeEl.textContent = safeMode
-            ? '⚠ Layer 4 safe-mode gate ENGAGED — holding last known-good setting, escalated to operator. This is PRAHARI avoiding an unsafe autonomous action under an active threat.'
-            : '✓ Telemetry integrity/ensemble agreement restored — PRAHARI has mitigated the threat and resumed autonomous operation.';
-        }
-      }
+  async function changeScenario(faultType) {
+    if(pending)return;
+    pending=true;renderScenario();setFeedback(faultType?'Applying scenario…':'Clearing injected fault…');
+    const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),10000);
+    try {
+      const response=await fetch('/api/simulate/inject',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({fault_type:faultType}),signal:controller.signal});
+      if(response.status===401)throw new Error('Sign-in expired. Open the drone console to sign in again.');
+      const result=await response.json().catch(()=>null);
+      if(!response.ok||result?.success!==true||!Object.prototype.hasOwnProperty.call(result,'active_fault'))throw new Error(typeof result?.detail==='string'?result.detail:`The simulator did not confirm this request (HTTP ${response.status}).`);
+      activeFault=result.active_fault;knownFault=true;
+      setFeedback(activeFault?`Confirmed: ${attackByFault(activeFault)?.label||readable(activeFault)} is active.`:'Confirmed: injected fault cleared. Baseline wear may still be present.');
+      if(latest)renderNarrative(latest);
+    } catch(error) { setFeedback(error.name==='AbortError'?'Request timed out. Check the active fault indicator before trying again.':error.message,true); }
+    finally { clearTimeout(timeout);pending=false;renderScenario(); }
+  }
+  $('btn-clear-attack').addEventListener('click',()=>changeScenario(null));
+  function connectFeed() {
+    const protocol=location.protocol==='https:'?'wss:':'ws:';
+    const ws=new WebSocket(`${protocol}//${location.host}/ws/telemetry`);
+    ws.onopen=()=>{connected=true;lastTelemetryAt=0;setFeedState('connecting');};
+    ws.onclose=()=>{connected=false;setFeedState('offline');setTimeout(connectFeed,2000);};
+    ws.onerror=()=>ws.close();
+    ws.onmessage=event=>{
+      let data;try{data=JSON.parse(event.data);}catch{return;}
+      if(!data||typeof data!=='object'||(!('fault_archetype'in data)&&!('cycle'in data)))return;
+      const wasLive=feedState==='live';latest=data;lastTelemetryAt=Date.now();setFeedState('live');
+      if(!pending&&Object.prototype.hasOwnProperty.call(data,'active_injected_fault')) { const changed=!knownFault||activeFault!==data.active_injected_fault;activeFault=data.active_injected_fault;knownFault=true;if(changed)setFeedback(activeFault?`Current scenario: ${attackByFault(activeFault)?.label||readable(activeFault)}.`:'No injected fault. Select a scenario to test the response.'); }
+      if(!wasLive&&!pending&&!$('scenario-feedback').classList.contains('error'))setFeedback(activeFault?'Telemetry restored. The injected fault remains active.':'Connected. Select a scenario to test the response.');
+      text('resp-fault',readable(data.fault_archetype));
+      const source=data.fault_assessment_source;
+      text('resp-confidence',typeof data.fault_confidence==='number'?`${percent(data.fault_confidence)}${source?' · '+String(source).replace(/_/g,' '):''}`:source?String(source).replace(/_/g,' '):'Model assessment');
+      text('resp-action-mode',data.drl_action?.action_mode?String(data.drl_action.action_mode).replace(/_/g,' ').toLowerCase().replace(/^./,c=>c.toUpperCase()):'—');
+      text('resp-agreement',percent(data.fault_agreement_score));text('resp-trend',percent(data.trend_risk_score));text('lm-cycle',Number.isFinite(data.cycle)?`Cycle ${data.cycle.toLocaleString()}`:'Cycle —');
+      renderScenario();renderNarrative(data);
     };
   }
-
-  async function init() {
-    const resp = await fetch('/static/assets/india_outline.json');
-    PROJECTION = await resp.json();
-
-    renderOutline();
-    renderTrajectoryPath();
-    renderStations(COMM_STATIONS, '#10b981', 4, 'name');
-    renderStations(DRDO_STATIONS, '#f59e0b', 5, 'name');
-    renderWaypoints();
-    renderAircraftMarker();
-    requestAnimationFrame(tick);
-
-    renderAttackButtons();
-    connectResponseFeed();
-  }
-
-  init();
+  setInterval(()=>{if(connected&&lastTelemetryAt&&Date.now()-lastTelemetryAt>8000&&feedState!=='stale')setFeedState('stale');},2000);
+  renderItinerary();renderProfile();updatePosition();requestAnimationFrame(tick);connectFeed();
+  fetch('/static/assets/india_outline.json').then(response=>{if(!response.ok)throw new Error('Map unavailable');return response.json();}).then(data=>{projection=data;renderMap();updatePosition();}).catch(()=>{text('map-load-status','Map outline unavailable. Route metrics, playback and altitude profile are still available.');});
 })();
