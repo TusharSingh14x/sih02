@@ -1,0 +1,6 @@
+# Railway / Nixpacks: this app is pinned to torch==2.8.0, which has no wheels
+# for Python 3.13/3.14. Force 3.10 so the image build can resolve requirements.txt.
+providers = ["python"]
+
+[variables]
+NIXPACKS_PYTHON_VERSION = "3.10"
